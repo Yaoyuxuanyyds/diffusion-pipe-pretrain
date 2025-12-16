@@ -1275,7 +1275,15 @@ def split_batch(batch, pieces):
 # pipeline parallel training. Iterates indefinitely (deepspeed requirement). Keeps track of epoch.
 # Updates epoch as soon as the final batch is returned (notably different from qlora-pipe).
 class PipelineDataLoader:
-    def __init__(self, dataset, model_engine, gradient_accumulation_steps, model, num_dataloader_workers=1):
+    def __init__(
+        self,
+        dataset,
+        model_engine,
+        gradient_accumulation_steps,
+        model,
+        num_dataloader_workers=1,
+        prefetch_batches_per_worker=1,
+    ):
         if len(dataset) == 0:
             raise RuntimeError(
                 'Processed dataset was empty. Probably caused by rounding down for each size bucket.\n'
@@ -1293,6 +1301,9 @@ class PipelineDataLoader:
         self.num_batches_pulled = 0
         self.next_micro_batch = None
         self.recreate_dataloader = False
+        # control how many batches each worker holds in its prefetch queue to avoid excessive
+        # host memory pressure when num_workers is large
+        self.prefetch_batches_per_worker = max(1, prefetch_batches_per_worker)
         # Be careful to only create the DataLoader some bounded number of times: https://github.com/pytorch/pytorch/issues/91252
         self._create_dataloader()
         self.data = self._pull_batches_from_dataloader()
@@ -1341,9 +1352,8 @@ class PipelineDataLoader:
             sampler=sampler,
             num_workers=self.num_dataloader_workers,
             persistent_workers=False,
-            prefetch_factor = None,
+            prefetch_factor=self.prefetch_batches_per_worker if self.num_dataloader_workers > 0 else None,
             # persistent_workers=(self.num_dataloader_workers > 0),
-            # prefetch_factor=1 if self.num_dataloader_workers > 0 else None,
         )
 
     def _pull_batches_from_dataloader(self):

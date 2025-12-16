@@ -831,7 +831,15 @@ if __name__ == '__main__':
     communication_data_type = config['lora']['dtype'] if 'lora' in config else config['model']['dtype']
     model_engine.communication_data_type = communication_data_type
 
-    train_dataloader = dataset_util.PipelineDataLoader(train_data, model_engine, model_engine.gradient_accumulation_steps(), model)
+    prefetch_batches_per_worker = config.get('dataloader_prefetch_per_worker', 1)
+    train_dataloader = dataset_util.PipelineDataLoader(
+        train_data,
+        model_engine,
+        model_engine.gradient_accumulation_steps(),
+        model,
+        num_dataloader_workers=config.get('num_dataloader_workers', 1),
+        prefetch_batches_per_worker=prefetch_batches_per_worker,
+    )
     steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
 
     scheduler_type = config.get('lr_scheduler', 'constant')
@@ -882,7 +890,14 @@ if __name__ == '__main__':
             pg['lr'] = config['force_constant_lr']
 
     eval_dataloaders = {
-        name: dataset_util.PipelineDataLoader(eval_data, model_engine, config['eval_gradient_accumulation_steps'], model)
+        name: dataset_util.PipelineDataLoader(
+            eval_data,
+            model_engine,
+            config['eval_gradient_accumulation_steps'],
+            model,
+            num_dataloader_workers=config.get('num_dataloader_workers', 1),
+            prefetch_batches_per_worker=prefetch_batches_per_worker,
+        )
         for name, eval_data in eval_data_map.items()
     }
 
