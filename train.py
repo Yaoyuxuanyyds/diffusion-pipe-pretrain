@@ -10,7 +10,6 @@ import json
 import inspect
 from pathlib import Path
 from collections import defaultdict
-
 import toml
 import deepspeed
 from deepspeed import comm as dist
@@ -414,7 +413,15 @@ if __name__ == '__main__':
     deepspeed.init_distributed()
 
     # needed for broadcasting Queue in dataset.py
-    torch.cuda.set_device(dist.get_rank())
+    # torch.cuda.set_device(dist.get_rank())
+
+
+    if torch.cuda.is_available():
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = torch.device("cpu")
 
     resume_from_checkpoint = (
         args.resume_from_checkpoint if args.resume_from_checkpoint is not None
