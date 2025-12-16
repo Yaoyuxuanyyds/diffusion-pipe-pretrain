@@ -3,7 +3,7 @@
 # ===============================
 output_dir = '/inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/outputs/sd3_light_pretrain/base'
 
-dataset = '/inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/settings/train/cc12m_dataset_test.toml'
+dataset = '/inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/settings/train/cc12m_dataset.toml'
 
 # You can have separate eval datasets. Give them a name for Tensorboard metrics.
 eval_datasets = [
@@ -23,7 +23,7 @@ epochs = 1000
 # Per-GPU micro batch
 micro_batch_size_per_gpu = 128
 
-map_num_proc = 128
+
 
 pipeline_stages = 1
 gradient_accumulation_steps = 1
@@ -32,6 +32,10 @@ gradient_accumulation_steps = 1
 # 16 (micro) × 8 (GAS) × 8 (GPUs) = 1024
 
 gradient_clipping = 1.0
+
+map_num_proc = 128
+num_dataloader_workers = 2
+prefetch_batches_per_worker = 1
 
 # ===============================
 # LR schedule

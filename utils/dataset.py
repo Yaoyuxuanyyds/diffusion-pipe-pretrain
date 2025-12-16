@@ -1303,7 +1303,7 @@ class PipelineDataLoader:
         self.recreate_dataloader = False
         # control how many batches each worker holds in its prefetch queue to avoid excessive
         # host memory pressure when num_workers is large
-        self.prefetch_batches_per_worker = max(1, prefetch_batches_per_worker)
+        self.prefetch_batches_per_worker = prefetch_batches_per_worker
         # Be careful to only create the DataLoader some bounded number of times: https://github.com/pytorch/pytorch/issues/91252
         self._create_dataloader()
         self.data = self._pull_batches_from_dataloader()
