@@ -831,7 +831,7 @@ if __name__ == '__main__':
     communication_data_type = config['lora']['dtype'] if 'lora' in config else config['model']['dtype']
     model_engine.communication_data_type = communication_data_type
 
-    prefetch_batches_per_worker = config.get('dataloader_prefetch_per_worker', 1)
+    prefetch_batches_per_worker = config.get('dataloader_prefetch_per_worker', None)
     train_dataloader = dataset_util.PipelineDataLoader(
         train_data,
         model_engine,
