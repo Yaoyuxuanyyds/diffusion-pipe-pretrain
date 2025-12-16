@@ -1,0 +1,61 @@
+# -------------------------
+# Output & Dataset
+# -------------------------
+output_dir = '/inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/outputs/sd3_test'
+dataset = '/inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/settings/cache/dataset/extra/cc12m_dataset_25-03.toml'
+
+steps_per_print = 10
+caching_batch_size = 256
+map_num_proc = 15
+
+
+# -------------------------
+# Training
+# -------------------------
+epochs = 1000
+micro_batch_size_per_gpu = 1
+pipeline_stages = 1
+gradient_accumulation_steps = 1
+gradient_clipping = 1.0
+warmup_steps = 100
+
+activation_checkpointing = true
+
+# -------------------------
+# Evaluation
+# -------------------------
+eval_every_n_epochs = 1
+eval_before_first_step = true
+eval_micro_batch_size_per_gpu = 1
+eval_gradient_accumulation_steps = 1
+
+# -------------------------
+# Saving & Checkpointing
+# -------------------------
+save_every_n_epochs = 2
+checkpoint_every_n_minutes = 120
+save_dtype = 'bfloat16'
+
+
+# -------------------------
+# Model
+# -------------------------
+[model]
+type = 'sd3'
+diffusers_path = '/inspire/hdd/project/chineseculture/public/yuxuan/base_models/Diffusion/SD3'
+
+dtype = 'bfloat16'
+transformer_dtype = 'float8'
+timestep_sample_method = 'logit_normal'
+
+
+# -------------------------
+# Optimizer
+# -------------------------
+[optimizer]
+type = 'adamw_optimi'
+lr = 2e-5
+betas = [0.9, 0.99]
+weight_decay = 0.01
+eps = 1e-8
+

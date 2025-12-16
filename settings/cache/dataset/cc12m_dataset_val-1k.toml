@@ -1,0 +1,6 @@
+resolutions = [256]
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-val/val-1k'
+num_repeats = 1
+

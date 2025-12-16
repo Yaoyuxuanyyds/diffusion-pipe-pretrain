@@ -1,0 +1,274 @@
+resolutions = [256]
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1360'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1361'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1362'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1363'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1364'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1365'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1366'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1367'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1368'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1369'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1370'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1371'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1372'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1373'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1374'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1375'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1376'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1377'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1378'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1379'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1380'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1381'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1382'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1383'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1384'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1385'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1386'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1387'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1388'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1389'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1390'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1391'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1392'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1393'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1394'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1395'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1396'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1397'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1398'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1399'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1400'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1401'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1402'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1403'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1404'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1405'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1406'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1407'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1408'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1409'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1410'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1411'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1412'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1413'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1414'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1415'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1416'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1417'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1418'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1419'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1420'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1421'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1422'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1423'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1424'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1425'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1426'
+num_repeats = 1
+
+[[directory]]
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/cc12m-unpacked/cc12m-train-1427'
+num_repeats = 1
+

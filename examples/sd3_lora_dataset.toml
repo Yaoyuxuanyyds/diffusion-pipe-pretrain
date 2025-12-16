@@ -1,0 +1,17 @@
+
+resolutions = [256]
+
+
+
+[[directory]]
+# Path to directory of images/videos, and corresponding caption files. The caption files should match the media file name, but with a .txt extension.
+# A missing caption file will log a warning, but then just train using an empty caption.
+path = '/inspire/hdd/project/chineseculture/public/yuxuan/datasets/test/cc12m-train-0000'
+
+
+# How many repeats for 1 epoch. The dataset will act like it is duplicated this many times.
+# The semantics of this are the same as sd-scripts: num_repeats=1 means one epoch is a single pass over all examples (no duplication).
+num_repeats = 1
+
+
+
