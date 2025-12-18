@@ -1356,18 +1356,33 @@ class PipelineDataLoader:
             # persistent_workers=(self.num_dataloader_workers > 0),
         )
 
+    # def _pull_batches_from_dataloader(self):
+    #     for batch in self.dataloader:
+    #         features, label = self.model.prepare_inputs(batch, timestep_quantile=self.eval_quantile)
+    #         target, mask = label
+    #         # The target depends on the noise, so we must broadcast it from the first stage to the last.
+    #         # NOTE: I had to patch the pipeline parallel TrainSchedule so that the LoadMicroBatch commands
+    #         # would line up on the first and last stage so that this doesn't deadlock.
+    #         target = self._broadcast_target(target)
+    #         label = (target, mask)
+    #         self.num_batches_pulled += 1
+    #         for micro_batch in split_batch((features, label), self.gradient_accumulation_steps):
+    #             yield micro_batch
     def _pull_batches_from_dataloader(self):
-        for batch in self.dataloader:
-            features, label = self.model.prepare_inputs(batch, timestep_quantile=self.eval_quantile)
-            target, mask = label
-            # The target depends on the noise, so we must broadcast it from the first stage to the last.
-            # NOTE: I had to patch the pipeline parallel TrainSchedule so that the LoadMicroBatch commands
-            # would line up on the first and last stage so that this doesn't deadlock.
-            target = self._broadcast_target(target)
-            label = (target, mask)
-            self.num_batches_pulled += 1
-            for micro_batch in split_batch((features, label), self.gradient_accumulation_steps):
-                yield micro_batch
+        dataloader_iter = iter(self.dataloader)
+        try:
+            for batch in dataloader_iter:
+                features, label = self.model.prepare_inputs(batch, timestep_quantile=self.eval_quantile)
+                target, mask = label
+                target = self._broadcast_target(target)
+                label = (target, mask)
+                self.num_batches_pulled += 1
+                for micro_batch in split_batch((features, label), self.gradient_accumulation_steps):
+                    yield micro_batch
+        finally:
+            if hasattr(dataloader_iter, '_shutdown_workers'):
+                dataloader_iter._shutdown_workers()
+
 
     def _broadcast_target(self, target):
         model_engine = self.model_engine

@@ -35,7 +35,7 @@ gradient_clipping = 1.0
 
 map_num_proc = 128
 num_dataloader_workers = 1
-#prefetch_batches_per_worker = 1
+prefetch_batches_per_worker = 1
 
 # ===============================
 # LR schedule
@@ -61,7 +61,7 @@ save_dtype = 'bfloat16'
 # ===============================
 # Memory / speed
 # ===============================
-activation_checkpointing = true
+activation_checkpointing = false
 partition_method = 'parameters'
 
 steps_per_print = 10

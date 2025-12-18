@@ -414,7 +414,8 @@ if __name__ == '__main__':
     deepspeed.init_distributed()
 
     # needed for broadcasting Queue in dataset.py
-    torch.cuda.set_device(dist.get_rank())
+    # torch.cuda.set_device(dist.get_rank())
+    torch.cuda.set_device(local_rank)
 
     resume_from_checkpoint = (
         args.resume_from_checkpoint if args.resume_from_checkpoint is not None
@@ -831,7 +832,7 @@ if __name__ == '__main__':
     communication_data_type = config['lora']['dtype'] if 'lora' in config else config['model']['dtype']
     model_engine.communication_data_type = communication_data_type
 
-    prefetch_batches_per_worker = config.get('dataloader_prefetch_per_worker', None)
+    prefetch_batches_per_worker = config.get('dataloader_prefetch_per_worker', 1)
     train_dataloader = dataset_util.PipelineDataLoader(
         train_data,
         model_engine,
