@@ -160,20 +160,19 @@ class TextEmbeddingDataset:
     def __init__(self, te_dataset, flattened_captions):
         self.te_dataset = te_dataset
         self.flattened_captions = flattened_captions
-        self.image_spec_to_te_idx = defaultdict(list)
-        # TODO: maybe make this use Dataset object like the latents. But, you won't be caching text embeddings
-        # when training on very large datasets, so perhaps it doesn't really matter.
-        for i, image_spec in enumerate(flattened_captions['image_spec']):
-            self.image_spec_to_te_idx[tuple(image_spec)].append(i)
+        self.latents_idx_to_te_idx = defaultdict(list)
+        for i, latents_idx in enumerate(flattened_captions['latents_idx']):
+            self.latents_idx_to_te_idx[int(latents_idx)].append(i)
 
-    def get_text_embeddings(self, image_spec, caption_number):
-        return self.te_dataset[self.image_spec_to_te_idx[image_spec][caption_number]]
+    def get_text_embeddings(self, latents_idx, caption_number):
+        return self.te_dataset[self.latents_idx_to_te_idx[int(latents_idx)][caption_number]]
 
 
 def _cache_text_embeddings(metadata_dataset, map_fn, i, cache_dir, regenerate_cache, caching_batch_size):
 
-    def flatten_captions(example):
+    def flatten_captions(example, indices):
         result = {key: [] for key in example}
+        result['latents_idx'] = []
         for i, captions in enumerate(example['caption']):
             for caption in captions:
                 result['caption'].append(caption)
@@ -181,9 +180,10 @@ def _cache_text_embeddings(metadata_dataset, map_fn, i, cache_dir, regenerate_ca
                     if key == 'caption':
                         continue
                     result[key].append(value[i])
+                result['latents_idx'].append(indices[i])
         return result
 
-    flattened_captions = metadata_dataset.map(flatten_captions, batched=True, keep_in_memory=True, remove_columns=metadata_dataset.column_names)
+    flattened_captions = metadata_dataset.map(flatten_captions, batched=True, with_indices=True, keep_in_memory=True, remove_columns=metadata_dataset.column_names)
         # Ensure we always work with pure Python objects (no shared Arrow buffers) when caching text embeddings,
     # so batched tokenization cannot read a mutated view of the captions.
     flattened_captions = flattened_captions.with_format("python")
@@ -217,6 +217,8 @@ class SizeBucketDataset:
                 old_cache_dir.rename(self.cache_dir)
 
         os.makedirs(self.cache_dir, exist_ok=True)
+        if 'latents_idx' not in self.metadata_dataset.column_names:
+            self.metadata_dataset = self.metadata_dataset.add_column('latents_idx', list(range(len(self.metadata_dataset))))
         self.text_embedding_datasets = []
         self.uncond_text_embeddings = []
         self.num_repeats = self.directory_config['num_repeats']
@@ -237,13 +239,11 @@ class SizeBucketDataset:
         assert len(self.latent_dataset) == len(self.metadata_dataset)
 
         iteration_order_cache_dir = self.cache_dir / 'iteration_order'
+        order_file = iteration_order_cache_dir / 'iteration_order.npy'
+        caption_file = iteration_order_cache_dir / 'captions.npy'
 
-        if regenerate_cache or not iteration_order_cache_dir.exists() or not trust_cache:
+        if regenerate_cache or not (order_file.exists() and caption_file.exists()) or not trust_cache:
             print('Building iteration order')
-            image_spec_to_latents_idx = {
-                tuple(image_spec): i
-                for i, image_spec in enumerate(self.metadata_dataset['image_spec'])
-            }
 
             equal_num_captions = True
             num_captions = None
@@ -255,41 +255,39 @@ class SizeBucketDataset:
                 num_captions = n
 
             if equal_num_captions:
-                # If all images have the same number of captions, set things up so we read (mostly) sequentially off disk. The metadata was already shuffled in the beginning.
                 iteration_order_by_caption_num = [[] for _ in range(num_captions)]
                 seed = 0
-                for example in self.metadata_dataset.select_columns(['image_spec', 'caption']):
-                    image_spec = example['image_spec']
-                    captions = example['caption']
+                for example in self.metadata_dataset.select_columns(['latents_idx', 'caption']):
+                    latents_idx = int(example['latents_idx'])
+                    captions = list(example['caption'])
                     shuffle_with_seed(captions, seed)
                     seed += 1
-                    latents_idx = image_spec_to_latents_idx[tuple(image_spec)]
                     for i, caption in enumerate(captions):
-                        iteration_order_by_caption_num[i].append((image_spec, latents_idx, caption, i))
+                        iteration_order_by_caption_num[i].append((latents_idx, caption, i))
                 iteration_order_list = []
                 for l in iteration_order_by_caption_num:
                     iteration_order_list.extend(l)
             else:
                 iteration_order_list = []
-                for example in self.metadata_dataset.select_columns(['image_spec', 'caption']):
-                    image_spec = example['image_spec']
+                for example in self.metadata_dataset.select_columns(['latents_idx', 'caption']):
+                    latents_idx = int(example['latents_idx'])
                     captions = example['caption']
-                    latents_idx = image_spec_to_latents_idx[tuple(image_spec)]
                     for i, caption in enumerate(captions):
-                        iteration_order_list.append((image_spec, latents_idx, caption, i))
+                        iteration_order_list.append((latents_idx, caption, i))
                 shuffle_with_seed(iteration_order_list, 42)
 
-            iteration_order_dict = defaultdict(list)
-            for image_spec, latents_idx, caption, caption_number in iteration_order_list:
-                iteration_order_dict['image_spec'].append(image_spec)
-                iteration_order_dict['latents_idx'].append(latents_idx)
-                iteration_order_dict['caption'].append(caption)
-                iteration_order_dict['caption_number'].append(caption_number)
-            iteration_order = datasets.Dataset.from_dict(iteration_order_dict)
-            iteration_order.save_to_disk(str(iteration_order_cache_dir))
-            del iteration_order
+            latents_indices = np.array([x[0] for x in iteration_order_list], dtype=np.int64)
+            caption_numbers = np.array([x[2] for x in iteration_order_list], dtype=np.int64)
+            captions_bytes = [("" if c is None else str(c)).encode('utf-8') for _, c, _ in iteration_order_list]
+            max_len = max((len(c) for c in captions_bytes), default=1)
+            captions_array = np.array(captions_bytes, dtype=f'S{max_len}')
 
-        self.iteration_order = datasets.load_from_disk(str(iteration_order_cache_dir))
+            os.makedirs(iteration_order_cache_dir, exist_ok=True)
+            np.save(order_file, np.stack([latents_indices, caption_numbers], axis=1))
+            np.save(caption_file, captions_array)
+
+        self.iteration_order = np.load(order_file)
+        self.captions_array = np.load(caption_file)
 
     def cache_text_embeddings(self, map_fn, i, regenerate_cache=False, caching_batch_size=1):
         print(f'caching text embeddings: {self.size_bucket}')
@@ -301,15 +299,15 @@ class SizeBucketDataset:
 
     def __getitem__(self, idx):
         idx = idx % len(self.iteration_order)
-        entry = self.iteration_order[idx]
+        latents_idx, caption_number = self.iteration_order[idx]
 
-        ret = self.latent_dataset[entry['latents_idx']]
+        ret = self.latent_dataset[int(latents_idx)]
 
         use_uncond = UNCOND_FRACTION > 0 and random.random() < UNCOND_FRACTION
-        caption = '' if use_uncond else entry['caption']
+        caption = '' if use_uncond else self.captions_array[idx].decode('utf-8')
 
         for ds, uncond_ds in zip(self.text_embedding_datasets, self.uncond_text_embeddings):
-            emb_dict = uncond_ds[0] if use_uncond else ds.get_text_embeddings(tuple(entry['image_spec']), entry['caption_number'])
+            emb_dict = uncond_ds[0] if use_uncond else ds.get_text_embeddings(int(latents_idx), int(caption_number))
             ret.update(emb_dict)
         ret['caption'] = caption
         return ret
@@ -338,7 +336,7 @@ class ConcatenatedBatchedDataset:
         for k, dataset_idx in enumerate(iteration_order):
             iteration_order[k] = (dataset_idx, cumulative_sums[dataset_idx])
             cumulative_sums[dataset_idx] += 1
-        self.iteration_order = np.array(iteration_order)
+        self.iteration_order = np.array(iteration_order, dtype=np.int64)
 
         # size_bucket could be [ar, w, h, frame] or [w, h, frames]
         global_batch_size_dict = global_batch_size_image if size_bucket[-1] == 1 else global_batch_size
@@ -368,7 +366,8 @@ class ConcatenatedBatchedDataset:
         assert self.post_init_called
         start_idx = idx * self.global_batch_size + self.data_parallel_rank * self.batch_size
         end_idx = start_idx + self.batch_size
-        return [self.datasets[i.item()][j.item()] for i, j in self.iteration_order[start_idx : end_idx]]
+        indices = self.iteration_order[start_idx:end_idx]
+        return [self.datasets[int(i)][int(j)] for i, j in indices]
 
     def _make_divisible_by(self, n):
         new_length = (len(self.iteration_order) // n) * n
@@ -939,7 +938,7 @@ class Dataset:
         for k, dataset_idx in enumerate(iteration_order):
             iteration_order[k] = (dataset_idx, cumulative_sums[dataset_idx])
             cumulative_sums[dataset_idx] += 1
-        self.iteration_order = iteration_order
+        self.iteration_order = np.array(iteration_order, dtype=np.int64)
         if DEBUG:
             print(f'Dataset iteration_order: {self.iteration_order}')
 
@@ -959,7 +958,7 @@ class Dataset:
     def __getitem__(self, idx):
         assert self.post_init_called
         i, j = self.iteration_order[idx]
-        examples_for_this_dp_rank = self.buckets[i][j]
+        examples_for_this_dp_rank = self.buckets[int(i)][int(j)]
         batch = self._collate(examples_for_this_dp_rank)
         return batch
 
