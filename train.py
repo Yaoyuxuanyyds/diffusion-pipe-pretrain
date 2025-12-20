@@ -57,6 +57,17 @@ parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 
 
+
+import ctypes
+libc = ctypes.CDLL("libc.so.6")
+
+def malloc_trim():
+    try:
+        libc.malloc_trim(0)
+    except Exception:
+        pass
+    
+    
 class DummyOptimizer(torch.optim.Optimizer):
     def __init__(self):
         self.state = defaultdict(dict)
@@ -532,10 +543,10 @@ if __name__ == '__main__':
         'steps_per_print': config.get('steps_per_print', 1),
     }
     caching_batch_size = config.get('caching_batch_size', 1)
-    dataset_manager = dataset_util.DatasetManager(model, regenerate_cache=regenerate_cache, trust_cache=args.trust_cache, caching_batch_size=caching_batch_size)
+    # dataset_manager = dataset_util.DatasetManager(model, regenerate_cache=regenerate_cache, trust_cache=args.trust_cache, caching_batch_size=caching_batch_size)
 
     train_data = dataset_util.Dataset(dataset_config, model, skip_dataset_validation=args.i_know_what_i_am_doing)
-    dataset_manager.register(train_data)
+    # dataset_manager.register(train_data)
 
     eval_data_map = {}
     for i, eval_dataset in enumerate(config['eval_datasets']):
@@ -548,14 +559,36 @@ if __name__ == '__main__':
         with open(config_path) as f:
             eval_dataset_config = toml.load(f)
         eval_data_map[name] = dataset_util.Dataset(eval_dataset_config, model, skip_dataset_validation=args.i_know_what_i_am_doing)
-        dataset_manager.register(eval_data_map[name])
+        # dataset_manager.register(eval_data_map[name])
 
 
 
-    dataset_manager.cache()
+    # dataset_manager.cache()
     if args.cache_only:
         quit()
 
+
+    # ✅ 只读 cache：metadata
+    train_data.cache_metadata(
+        regenerate_cache=False,
+        trust_cache=True
+    )
+
+    # ✅ 只读 cache：latents
+    train_data.cache_latents(
+        map_fn=None,
+        regenerate_cache=False,
+        trust_cache=True
+    )
+
+    # ✅ 只读 cache：text embeddings
+    for i in range(1, len(model.get_text_encoders()) + 1):
+        train_data.cache_text_embeddings(
+            map_fn=None,
+            i=i,
+            regenerate_cache=False
+        )
+        
     # model.load_diffusion_model()
     if training_type != "sd3_light_pretrain":
         model.load_diffusion_model()
@@ -994,6 +1027,12 @@ if __name__ == '__main__':
         num_steps += 1
         train_dataloader.sync_epoch()
 
+        if num_steps % 200 == 0:
+            import gc
+            gc.collect()
+            malloc_trim()
+            torch.cuda.empty_cache()
+            
         if ema is not None and step % EMA_UPDATE_EVERY == 0:
             ema.update(model.diffusers_pipeline.transformer.named_parameters())
 

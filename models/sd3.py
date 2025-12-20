@@ -4,7 +4,7 @@ import diffusers
 import torch
 from torch import nn
 import torch.nn.functional as F
-
+import numpy as np
 from models.base import BasePipeline, make_contiguous
 from utils.common import AUTOCAST_DTYPE
 
@@ -20,6 +20,7 @@ def get_lin_function(x1: float = 256, y1: float = 0.5, x2: float = 4096, y2: flo
     m = (y2 - y1) / (x2 - x1)
     b = y1 - m * x1
     return lambda x: m * x + b
+
 
 
 class SD3Pipeline(BasePipeline):
@@ -54,6 +55,46 @@ class SD3Pipeline(BasePipeline):
 
         self.diffusers_pipeline.transformer = transformer
 
+    def _normalize_prompt_batch(self, prompt_batch):
+        if isinstance(prompt_batch, str):
+            prompt_batch = [prompt_batch]
+        else:
+            prompt_batch = list(prompt_batch)
+        return ["" if p is None else str(p) for p in prompt_batch]
+
+    def _encode_clip_prompts(self, captions, text_encoder, tokenizer):
+        captions = self._normalize_prompt_batch(captions)
+        tokenized = tokenizer(
+            captions,
+            padding="max_length",
+            max_length=self.tokenizer_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        input_ids = tokenized.input_ids.to(text_encoder.device)
+        outputs = text_encoder(input_ids, output_hidden_states=True)
+        pooled_prompt_embeds = outputs[0]
+        prompt_embeds = outputs.hidden_states[-2].to(dtype=text_encoder.dtype, device=text_encoder.device)
+        pooled_prompt_embeds = pooled_prompt_embeds.to(dtype=text_encoder.dtype, device=text_encoder.device)
+        return prompt_embeds, pooled_prompt_embeds
+
+    def _encode_t5_prompts(self, captions):
+        captions = self._normalize_prompt_batch(captions)
+        max_sequence_length = self.model_config.get('t5_max_length', 256)
+        tokenized = self.tokenizer_3(
+            captions,
+            padding="max_length",
+            max_length=max_sequence_length,
+            truncation=True,
+            add_special_tokens=True,
+            return_tensors="pt",
+        )
+        input_ids = tokenized.input_ids.to(self.text_encoder_3.device)
+        prompt_embeds = self.text_encoder_3(input_ids)[0]
+        prompt_embeds = prompt_embeds.to(dtype=self.text_encoder_3.dtype, device=self.text_encoder_3.device)
+        return prompt_embeds
+
+
     def get_vae(self):
         return self.vae
 
@@ -79,10 +120,15 @@ class SD3Pipeline(BasePipeline):
         if text_encoder == self.text_encoder:
             def fn(caption, is_video):
                 assert not any(is_video)
-                prompt_embed, pooled_prompt_embed = self._get_clip_prompt_embeds(
-                    prompt=caption,
-                    device=text_encoder.device,
-                    clip_model_index=0,
+                # prompt_embed, pooled_prompt_embed = self._get_clip_prompt_embeds(
+                #     prompt=caption,
+                #     device=text_encoder.device,
+                #     clip_model_index=0,
+                # )
+                prompt_embed, pooled_prompt_embed = self._encode_clip_prompts(
+                    captions=caption,
+                    text_encoder=text_encoder,
+                    tokenizer=self.tokenizer,
                 )
                 return {'prompt_embed': prompt_embed, 'pooled_prompt_embed': pooled_prompt_embed}
             return fn
@@ -90,17 +136,23 @@ class SD3Pipeline(BasePipeline):
         elif text_encoder == self.text_encoder_2:
             def fn(caption, is_video):
                 assert not any(is_video)
-                prompt_2_embed, pooled_prompt_2_embed = self._get_clip_prompt_embeds(
-                    prompt=caption,
-                    device=text_encoder.device,
-                    clip_model_index=1,
+                # prompt_2_embed, pooled_prompt_2_embed = self._get_clip_prompt_embeds(
+                #     prompt=caption,
+                #     device=text_encoder.device,
+                #     clip_model_index=1,
+                # )
+                prompt_2_embed, pooled_prompt_2_embed = self._encode_clip_prompts(
+                    captions=caption,
+                    text_encoder=text_encoder,
+                    tokenizer=self.tokenizer_2,
                 )
                 return {'prompt_2_embed': prompt_2_embed, 'pooled_prompt_2_embed': pooled_prompt_2_embed}
             return fn
         elif text_encoder == self.text_encoder_3:
             def fn(caption, is_video):
                 assert not any(is_video)
-                return {'t5_prompt_embed': self._get_t5_prompt_embeds(prompt=caption, device=text_encoder.device)}
+                # return {'t5_prompt_embed': self._get_t5_prompt_embeds(prompt=caption, device=text_encoder.device)}
+                return {'t5_prompt_embed': self._encode_t5_prompts(caption)}
             return fn
         else:
             raise RuntimeError(f'Text encoder {text_encoder.__class__} does not have a function to call it')

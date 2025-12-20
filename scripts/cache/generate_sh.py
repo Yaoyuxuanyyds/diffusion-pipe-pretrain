@@ -2,11 +2,11 @@ import os
 from pathlib import Path
 
 # 要生成的脚本数量：生成从 start_idx 到 N（包含）
-N = 30         # 比如生成 0~10 共 11 个；你按需改
+N = 31        # 比如生成 0~10 共 11 个；你按需改
 start_idx = 0   # 如果想从 1 开始，就改成 1
 
 # 输出目录（放生成的 .sh 文件）
-out_dir = Path("/inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/scripts/cache/extra")
+out_dir = Path("/inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/scripts/cache/")
 out_dir.mkdir(parents=True, exist_ok=True)
 
 template = """#!/usr/bin/env bash
@@ -15,7 +15,7 @@ source /inspire/hdd/project/chineseculture/public/yuxuan/miniconda3/etc/profile.
 conda activate diffusion-pipe
 cd /inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe
 
-NCCL_P2P_DISABLE="1" NCCL_IB_DISABLE="1" deepspeed --num_gpus=1 train.py --deepspeed --config /inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/settings/cache/train_configs/sd3_cache_{idx}.toml --cache_only
+NCCL_P2P_DISABLE="0" NCCL_IB_DISABLE="0" deepspeed --num_gpus=4 train.py --deepspeed --config /inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/settings/cache/train_configs/sd3_cache_{idx}.toml --cache_only
 """
 
 for i in range(start_idx, N + 1):

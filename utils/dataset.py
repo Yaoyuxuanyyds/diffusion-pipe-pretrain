@@ -10,7 +10,7 @@ import tarfile
 from inspect import signature
 import sys
 sys.path.insert(0, os.path.join(os.path.abspath(os.path.dirname(__file__)), '../submodules/ComfyUI'))
-
+import copy
 import numpy as np
 import torch
 from torch import nn
@@ -184,6 +184,9 @@ def _cache_text_embeddings(metadata_dataset, map_fn, i, cache_dir, regenerate_ca
         return result
 
     flattened_captions = metadata_dataset.map(flatten_captions, batched=True, keep_in_memory=True, remove_columns=metadata_dataset.column_names)
+        # Ensure we always work with pure Python objects (no shared Arrow buffers) when caching text embeddings,
+    # so batched tokenization cannot read a mutated view of the captions.
+    flattened_captions = flattened_captions.with_format("python")
     te_dataset = _map_and_cache(
         flattened_captions,
         map_fn,
@@ -1087,15 +1090,36 @@ def _cache_fn(datasets, queue, preprocess_media_file_fn, num_text_encoders, rege
     for text_encoder_idx in range(num_text_encoders):
 
         def text_embedding_map_fn(example, rank):
+            
+            
+            captions = example['caption']
+            if not isinstance(captions, list):
+                captions = list(captions)
+            captions = ["" if c is None else str(c) for c in captions]
+
+            is_video = example['is_video']
+            if not isinstance(is_video, list):
+                is_video = list(is_video)
+            is_video = [bool(v) for v in is_video]
+
+
+
             if rank not in pipes:
                 pipes[rank] = mp.Pipe(duplex=False)
             parent_conn, child_conn = pipes[rank]
             control_file = example['control_file'] if 'control_file' in example else None
+            
 
+            if control_file is not None and not isinstance(control_file, list):
+                control_file = list(control_file)
+                
+                
             queue.put((
                 text_encoder_idx + 1,
-                example['caption'],     # captions 不再 batch，单条处理
-                example['is_video'],
+                # example['caption'],     # captions 不再 batch，单条处理
+                # example['is_video'],
+                captions,
+                is_video,
                 control_file,
                 child_conn
             ))
@@ -1110,7 +1134,7 @@ def _cache_fn(datasets, queue, preprocess_media_file_fn, num_text_encoders, rege
                 text_embedding_map_fn,
                 text_encoder_idx + 1,
                 regenerate_cache,
-                caching_batch_size=1   # 强制单条 caption
+                caching_batch_size=caching_batch_size
             )
 
     # signal that we're done
