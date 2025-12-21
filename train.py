@@ -548,7 +548,7 @@ if __name__ == '__main__':
 
     if sd3_streaming:
         cache_root = Path(dataset_config['cache_dir']).expanduser() / 'cache'
-        manifest_builder = dataset_util.SD3LightManifestBuilder(dataset_config, model.name, cache_root, shard_size=config.get('sd3_shard_size', 512))
+        manifest_builder = dataset_util.SD3LightManifestBuilder(dataset_config, model, model.name, cache_root, shard_size=config.get('sd3_shard_size', 512))
         cache_dir, manifest_fp = manifest_builder.build(regenerate_cache=regenerate_cache or args.regenerate_cache)
         train_data = dataset_util.SD3LightPretrainDataset(dataset_config, model, cache_dir, manifest_fp)
         if args.cache_only:
