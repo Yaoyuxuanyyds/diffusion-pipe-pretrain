@@ -542,52 +542,61 @@ if __name__ == '__main__':
         'gradient_clipping': 0. if gradient_release else config.get('gradient_clipping', 1.0),
         'steps_per_print': config.get('steps_per_print', 1),
     }
+    sd3_streaming = training_type == "sd3_light_pretrain" and config.get("sd3_streaming_dataset", True)
     caching_batch_size = config.get('caching_batch_size', 1)
-    dataset_manager = dataset_util.DatasetManager(model, regenerate_cache=regenerate_cache, trust_cache=args.trust_cache, caching_batch_size=caching_batch_size)
-
-    train_data = dataset_util.Dataset(dataset_config, model, skip_dataset_validation=args.i_know_what_i_am_doing)
-    dataset_manager.register(train_data)
-
     eval_data_map = {}
-    for i, eval_dataset in enumerate(config['eval_datasets']):
-        if type(eval_dataset) == str:
-            name = f'eval{i}'
-            config_path = eval_dataset
-        else:
-            name = eval_dataset['name']
-            config_path = eval_dataset['config']
-        with open(config_path) as f:
-            eval_dataset_config = toml.load(f)
-        eval_data_map[name] = dataset_util.Dataset(eval_dataset_config, model, skip_dataset_validation=args.i_know_what_i_am_doing)
-        dataset_manager.register(eval_data_map[name])
 
-
-
-    dataset_manager.cache()
-    if args.cache_only:
-        quit()
-
-
-    # ✅ 只读 cache：metadata
-    train_data.cache_metadata(
-        regenerate_cache=False,
-        trust_cache=True
-    )
-
-    # ✅ 只读 cache：latents
-    train_data.cache_latents(
-        map_fn=None,
-        regenerate_cache=False,
-        trust_cache=True
-    )
-
-    # ✅ 只读 cache：text embeddings
-    for i in range(1, len(model.get_text_encoders()) + 1):
-        train_data.cache_text_embeddings(
-            map_fn=None,
-            i=i,
-            regenerate_cache=False
+    if sd3_streaming:
+        cache_root = Path(config['output_dir']).expanduser() / 'cache'
+        manifest_builder = dataset_util.SD3LightManifestBuilder(
+            dataset_config,
+            model,
+            model.name,
+            cache_root,
+            shard_size=config.get('sd3_shard_size', 512),
+            caching_batch_size=caching_batch_size,
         )
+        cache_dir, manifest_fp = manifest_builder.build(regenerate_cache=regenerate_cache or args.regenerate_cache)
+        train_data = dataset_util.SD3LightPretrainDataset(dataset_config, model, cache_dir, manifest_fp)
+    else:
+        dataset_manager = dataset_util.DatasetManager(model, regenerate_cache=regenerate_cache, trust_cache=args.trust_cache, caching_batch_size=caching_batch_size)
+
+        train_data = dataset_util.Dataset(dataset_config, model, skip_dataset_validation=args.i_know_what_i_am_doing)
+        dataset_manager.register(train_data)
+
+        for i, eval_dataset in enumerate(config['eval_datasets']):
+            if type(eval_dataset) == str:
+                name = f'eval{i}'
+                config_path = eval_dataset
+            else:
+                name = eval_dataset['name']
+                config_path = eval_dataset['config']
+            with open(config_path) as f:
+                eval_dataset_config = toml.load(f)
+            eval_data_map[name] = dataset_util.Dataset(eval_dataset_config, model, skip_dataset_validation=args.i_know_what_i_am_doing)
+            dataset_manager.register(eval_data_map[name])
+
+        dataset_manager.cache()
+        if args.cache_only:
+            quit()
+
+        train_data.cache_metadata(
+            regenerate_cache=False,
+            trust_cache=True
+        )
+
+        train_data.cache_latents(
+            map_fn=None,
+            regenerate_cache=False,
+            trust_cache=True
+        )
+
+        for i in range(1, len(model.get_text_encoders()) + 1):
+            train_data.cache_text_embeddings(
+                map_fn=None,
+                i=i,
+                regenerate_cache=False
+            )
         
     # model.load_diffusion_model()
     if training_type != "sd3_light_pretrain":
@@ -845,37 +854,52 @@ if __name__ == '__main__':
 
 
 
-    train_data.post_init(
-        model_engine.grid.get_data_parallel_rank(),
-        model_engine.grid.get_data_parallel_world_size(),
-        micro_batch_size_per_gpu,
-        model_engine.gradient_accumulation_steps(),
-        image_micro_batch_size_per_gpu,
-    )
-    for eval_data in eval_data_map.values():
-        eval_data.post_init(
-            model_engine.grid.get_data_parallel_rank(),
-            model_engine.grid.get_data_parallel_world_size(),
-            eval_micro_batch_size_per_gpu,
-            config['eval_gradient_accumulation_steps'],
-            eval_image_micro_batch_size_per_gpu,
-        )
-
-    # Might be useful because we set things in fp16 / bf16 without explicitly enabling Deepspeed fp16 mode.
-    # Unsure if really needed.
     communication_data_type = config['lora']['dtype'] if 'lora' in config else config['model']['dtype']
     model_engine.communication_data_type = communication_data_type
 
-    prefetch_batches_per_worker = config.get('dataloader_prefetch_per_worker', 1)
-    train_dataloader = dataset_util.PipelineDataLoader(
-        train_data,
-        model_engine,
-        model_engine.gradient_accumulation_steps(),
-        model,
-        num_dataloader_workers=config.get('num_dataloader_workers', 1),
-        prefetch_batches_per_worker=prefetch_batches_per_worker,
-    )
-    steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
+    if sd3_streaming:
+        train_dataloader = dataset_util.SD3LightPretrainDataLoader(
+            train_data,
+            model_engine,
+            model,
+            micro_batch_size_per_gpu[None],
+            model_engine.gradient_accumulation_steps(),
+            num_workers=config.get('num_dataloader_workers', 4),
+            prefetch_factor=config.get('dataloader_prefetch_per_worker', 2),
+        )
+        steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
+    else:
+        train_data.post_init(
+            model_engine.grid.get_data_parallel_rank(),
+            model_engine.grid.get_data_parallel_world_size(),
+            micro_batch_size_per_gpu,
+            model_engine.gradient_accumulation_steps(),
+            image_micro_batch_size_per_gpu,
+        )
+        for eval_data in eval_data_map.values():
+            eval_data.post_init(
+                model_engine.grid.get_data_parallel_rank(),
+                model_engine.grid.get_data_parallel_world_size(),
+                eval_micro_batch_size_per_gpu,
+                config['eval_gradient_accumulation_steps'],
+                eval_image_micro_batch_size_per_gpu,
+            )
+
+        # Might be useful because we set things in fp16 / bf16 without explicitly enabling Deepspeed fp16 mode.
+        # Unsure if really needed.
+        communication_data_type = config['lora']['dtype'] if 'lora' in config else config['model']['dtype']
+        model_engine.communication_data_type = communication_data_type
+
+        prefetch_batches_per_worker = config.get('dataloader_prefetch_per_worker', 1)
+        train_dataloader = dataset_util.PipelineDataLoader(
+            train_data,
+            model_engine,
+            model_engine.gradient_accumulation_steps(),
+            model,
+            num_dataloader_workers=config.get('num_dataloader_workers', 1),
+            prefetch_batches_per_worker=prefetch_batches_per_worker,
+        )
+        steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
 
     scheduler_type = config.get('lr_scheduler', 'constant')
     if scheduler_type == 'constant':
