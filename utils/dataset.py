@@ -144,9 +144,12 @@ class SD3LightPretrainDataset(torch.utils.data.Dataset):
             size_bucket = None
         # wrap path like legacy spec: (tar_path, file_path)
         processed = self.preprocess_media_fn((None, meta['image_path']), None, size_bucket=size_bucket)
+        pixel_values, mask = processed[0]
+        if mask is None:
+            mask = torch.tensor([])
         return {
-            'pixel_values': processed[0][0],
-            'mask': processed[0][1],
+            'pixel_values': pixel_values,
+            'mask': mask,
             'caption': meta.get('caption', ''),
         }
 
