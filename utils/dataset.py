@@ -24,8 +24,9 @@ import multiprocess as mp
 from tqdm import tqdm
 
 from utils.common import is_main_process, VIDEO_EXTENSIONS, round_to_nearest_multiple
-from utils.cache import Cache
+from utils.cache import Cache, ShardCache, ShardCacheWriter
 import comfy.model_management as mm
+import json
 
   
 DEBUG = False
@@ -35,6 +36,215 @@ CAPTIONS_JSON_FILE = 'captions.json'
 ROUND_DECIMAL_DIGITS = 3
 
 UNCOND_FRACTION = 0.0
+
+
+# ---------------------------------------------------------------------------
+# SD3 Light Pretrain: simplified streaming dataset + cache
+# ---------------------------------------------------------------------------
+
+
+def _list_media_files(root: Path, extensions=None):
+    extensions = extensions or VIDEO_EXTENSIONS
+    files = []
+    for path in root.rglob('*'):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() in extensions or path.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp'}:
+            files.append(path)
+    files.sort()
+    return files
+
+
+class SD3LightManifestBuilder:
+    """
+    Build a lightweight manifest for SD3 light pretrain that only stores
+    the minimal metadata required to stream data efficiently at train time.
+    """
+
+    def __init__(self, dataset_config, model_name: str, cache_root: Path, shard_size: int = 512):
+        self.dataset_config = dataset_config
+        self.model_name = model_name
+        self.shard_size = shard_size
+        self.cache_root = cache_root
+
+    def _fingerprint(self):
+        content = json.dumps(self.dataset_config, sort_keys=True)
+        return hashlib.md5((self.model_name + content).encode()).hexdigest()
+
+    def build(self, regenerate_cache=False):
+        cache_base = self.cache_root / f'sd3_stream_{self.model_name}'
+        cache_base.mkdir(parents=True, exist_ok=True)
+        manifest_fp = self._fingerprint()
+        manifest_file = cache_base / 'manifest.json'
+        if manifest_file.exists() and not regenerate_cache:
+            with open(manifest_file) as f:
+                data = json.load(f)
+            if data.get('fingerprint') == manifest_fp:
+                return cache_base, manifest_fp
+            else:
+                for fpath in cache_base.glob('*'):
+                    if fpath.is_file():
+                        fpath.unlink()
+
+        writer = ShardCacheWriter(cache_base, manifest_fp, shard_size=self.shard_size)
+        for directory in self.dataset_config['directory']:
+            root = Path(directory['path'])
+            caption_prefix = directory.get('caption_prefix', '')
+            files = _list_media_files(root)
+            for media_path in tqdm(files, desc=f'building manifest for {root}'):
+                caption_file = media_path.with_suffix('.txt')
+                caption = ''
+                if caption_file.exists():
+                    with open(caption_file) as f:
+                        caption = caption_prefix + f.read().strip()
+                writer.add({
+                    'image_path': str(media_path),
+                    'caption': caption,
+                    'is_video': media_path.suffix.lower() in VIDEO_EXTENSIONS,
+                })
+        writer.finalize()
+        return cache_base, manifest_fp
+
+
+class SD3LightPretrainDataset(torch.utils.data.Dataset):
+    """
+    Streaming dataset that keeps only a small manifest in memory and loads
+    media on-the-fly. Used only for sd3_light_pretrain.
+    """
+
+    def __init__(self, dataset_config, model, shard_cache_dir: Path, fingerprint: str):
+        self.dataset_config = dataset_config
+        self.model = model
+        self.preprocess_media_fn = self.model.get_preprocess_media_file_fn()
+        self.cache = ShardCache(shard_cache_dir, fingerprint, max_shards_in_memory=2)
+
+    def __len__(self):
+        return len(self.cache)
+
+    def __getitem__(self, idx):
+        meta = self.cache[idx]
+        return self.preprocess_media_fn(meta['image_path'], meta.get('caption', ''), meta.get('is_video', False))
+
+
+class SD3LightPretrainDataLoader:
+    """
+    Minimal dataloader interface compatible with the existing pipeline hooks,
+    but built on top of torch DataLoader with DistributedSampler to avoid
+    multiprocess.Manager and forked pools.
+    """
+
+    def __init__(
+        self,
+        dataset: SD3LightPretrainDataset,
+        model_engine,
+        model,
+        micro_batch_size_per_gpu: int,
+        gradient_accumulation_steps: int,
+        num_workers: int = 4,
+        prefetch_factor: int = 2,
+    ):
+        self.dataset = dataset
+        self.model = model
+        self.model_engine = model_engine
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.micro_batch_size_per_gpu = micro_batch_size_per_gpu
+        self.batch_size = micro_batch_size_per_gpu * gradient_accumulation_steps
+        self.prefetch_factor = prefetch_factor
+
+        self.sampler = torch.utils.data.distributed.DistributedSampler(
+            self.dataset,
+            num_replicas=model_engine.grid.get_data_parallel_world_size(),
+            rank=model_engine.grid.get_data_parallel_rank(),
+            shuffle=True,
+            drop_last=True,
+        )
+        self.dataloader = torch.utils.data.DataLoader(
+            self.dataset,
+            batch_size=self.batch_size,
+            sampler=self.sampler,
+            num_workers=num_workers,
+            pin_memory=False,
+            persistent_workers=(num_workers > 0),
+            prefetch_factor=prefetch_factor if num_workers > 0 else None,
+        )
+        self.epoch = 0
+        self.iter_called = False
+        self.next_micro_batch = None
+        self.data_iter = None
+        self.eval_quantile = None
+
+    def set_eval_quantile(self, quantile):
+        self.eval_quantile = quantile
+
+    def __len__(self):
+        return len(self.dataloader) * self.gradient_accumulation_steps
+
+    def __iter__(self):
+        self.iter_called = True
+        self.sampler.set_epoch(self.epoch)
+        self.data_iter = iter(self.dataloader)
+        return self
+
+    def __next__(self):
+        while True:
+            if self.next_micro_batch is None:
+                try:
+                    batch = next(self.data_iter)
+                except StopIteration:
+                    self.epoch += 1
+                    self.sampler.set_epoch(self.epoch)
+                    self.data_iter = iter(self.dataloader)
+                    batch = next(self.data_iter)
+                features, label = self.model.prepare_inputs(batch, timestep_quantile=self.eval_quantile)
+                target, mask = label
+                target = self._broadcast_target(target)
+                label = (target, mask)
+                micro_batches = split_batch((features, label), self.gradient_accumulation_steps)
+                self.next_micro_batch = iter(micro_batches)
+            try:
+                return next(self.next_micro_batch)
+            except StopIteration:
+                self.next_micro_batch = None
+
+    def reset(self):
+        self.epoch = 0
+        self.next_micro_batch = None
+        self.data_iter = None
+
+    def sync_epoch(self):
+        # align epoch across ranks
+        process_group = dist.get_world_group()
+        result = [None] * dist.get_world_size(process_group)
+        torch.distributed.all_gather_object(result, self.epoch, group=process_group)
+        self.epoch = max(result)
+
+    def state_dict(self):
+        return {
+            'epoch': self.epoch,
+        }
+
+    def load_state_dict(self, state_dict):
+        self.epoch = state_dict.get('epoch', 0)
+
+    def _broadcast_target(self, target):
+        model_engine = self.model_engine
+        if not model_engine.is_pipe_parallel:
+            return target
+
+        assert model_engine.is_first_stage() or model_engine.is_last_stage()
+        grid = model_engine.grid
+
+        src_rank = grid.stage_to_global(0)
+        dest_rank = grid.stage_to_global(model_engine.num_stages - 1)
+        assert src_rank in grid.pp_group
+        assert dest_rank in grid.pp_group
+        target = target.to('cuda')  # must be on GPU to broadcast
+
+        if model_engine.is_first_stage():
+            dist.send(target, dest_rank)
+        else:
+            dist.recv(target, src_rank)
+        return target
 
 
 def shuffle_with_seed(l, seed=None):
@@ -102,7 +312,7 @@ def _map_and_cache(dataset, map_fn, cache_dir, cache_file_prefix='', new_fingerp
     assert cache_size <= dataset_size
     if cache_size == dataset_size:
         return cache
-    dataset = dataset.select(range(cache_size, dataset_size), keep_in_memory=True)
+    dataset = dataset.select(range(cache_size, dataset_size))
 
     # Let each worker process know its rank
     manager = mp.Manager()
@@ -152,6 +362,8 @@ def _map_and_cache(dataset, map_fn, cache_dir, cache_file_prefix='', new_fingerp
             cache.add(example)
 
     pool.close()
+    pool.join()
+    manager.shutdown()
     cache.finalize_current_shard()
     return cache
 
@@ -184,7 +396,7 @@ def _cache_text_embeddings(metadata_dataset, map_fn, i, cache_dir, regenerate_ca
                 result['latents_idx'].append(indices[i])
         return result
 
-    flattened_captions = metadata_dataset.map(flatten_captions, batched=True, with_indices=True, keep_in_memory=True, remove_columns=metadata_dataset.column_names)
+    flattened_captions = metadata_dataset.map(flatten_captions, batched=True, with_indices=True, remove_columns=metadata_dataset.column_names)
         # Ensure we always work with pure Python objects (no shared Arrow buffers) when caching text embeddings,
     # so batched tokenization cannot read a mutated view of the captions.
     flattened_captions = flattened_captions.with_format("python")
@@ -960,6 +1172,11 @@ class Dataset:
     def set_eval_quantile(self, quantile):
         self.eval_quantile = quantile
 
+    def finalize_for_training(self):
+        for directory_dataset in self.directory_datasets:
+            for size_bucket_dataset in directory_dataset.get_size_bucket_datasets():
+                size_bucket_dataset.finalize_for_training()
+
     def __len__(self):
         assert self.post_init_called
         return len(self.iteration_order)
@@ -1233,6 +1450,7 @@ class DatasetManager:
             ds.cache_latents(None, trust_cache=True)
             for i in range(1, len(self.text_encoders)+1):
                 ds.cache_text_embeddings(None, i)
+            ds.finalize_for_training()
 
     @torch.no_grad()
     def _handle_task(self, task):
