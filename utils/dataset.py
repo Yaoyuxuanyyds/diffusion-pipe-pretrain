@@ -61,11 +61,16 @@ class SD3LightManifestBuilder:
     the minimal metadata required to stream data efficiently at train time.
     """
 
-    def __init__(self, dataset_config, model_name: str, cache_root: Path, shard_size: int = 512):
+    def __init__(self, dataset_config, model, model_name: str, cache_root: Path, shard_size: int = 512):
         self.dataset_config = dataset_config
+        self.model = model
         self.model_name = model_name
         self.shard_size = shard_size
         self.cache_root = cache_root
+        self.preprocess_media_fn = self.model.get_preprocess_media_file_fn()
+        self.vae_fn = self.model.get_call_vae_fn(self.model.get_vae())
+        self.text_encoders = self.model.get_text_encoders()
+        self.text_fns = [self.model.get_call_text_encoder_fn(te) for te in self.text_encoders]
 
     def _fingerprint(self):
         content = json.dumps(self.dataset_config, sort_keys=True)
@@ -110,12 +115,27 @@ class SD3LightManifestBuilder:
                 if caption_file.exists():
                     with open(caption_file) as f:
                         caption = caption_prefix + f.read().strip()
-                writer.add({
-                    'image_path': str(media_path),
+                size_bucket = (int(target_size[0]), int(target_size[1]), 1) if target_size else None
+                # run preprocess -> VAE -> text encoders, then move to cpu for sharding
+                processed = self.preprocess_media_fn((None, str(media_path)), None, size_bucket=size_bucket)
+                pixel_values, mask = processed[0]
+                latents = self.vae_fn(pixel_values.to(self.model.get_vae().device, self.model.get_vae().dtype))['latents']
+                text_dict = {}
+                is_video = [False] * len(processed)
+                captions_batch = [caption] * len(processed)
+                for fn in self.text_fns:
+                    text_dict.update(fn(captions_batch, is_video))
+                item = {
+                    'latents': latents.cpu(),
+                    'mask': mask if mask is None else mask.cpu(),
                     'caption': caption,
-                    'is_video': media_path.suffix.lower() in VIDEO_EXTENSIONS,
-                    'target_size': target_size,
-                })
+                    'prompt_embed': text_dict.get('prompt_embed', torch.tensor([])),
+                    'pooled_prompt_embed': text_dict.get('pooled_prompt_embed', torch.tensor([])),
+                    'prompt_2_embed': text_dict.get('prompt_2_embed', torch.tensor([])),
+                    'pooled_prompt_2_embed': text_dict.get('pooled_prompt_2_embed', torch.tensor([])),
+                    't5_prompt_embed': text_dict.get('t5_prompt_embed', torch.tensor([])),
+                }
+                writer.add(item)
         writer.finalize()
         return cache_base, manifest_fp
 
@@ -137,20 +157,19 @@ class SD3LightPretrainDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         meta = self.cache[idx]
-        target_size = meta.get('target_size', None)
-        if target_size is not None:
-            size_bucket = (int(target_size[0]), int(target_size[1]), 1)
-        else:
-            size_bucket = None
-        # wrap path like legacy spec: (tar_path, file_path)
-        processed = self.preprocess_media_fn((None, meta['image_path']), None, size_bucket=size_bucket)
-        pixel_values, mask = processed[0]
+        pixel_values = meta['latents']  # already VAE-encoded latents
+        mask = meta.get('mask', torch.tensor([]))
         if mask is None:
             mask = torch.tensor([])
         return {
-            'pixel_values': pixel_values,
+            'latents': pixel_values,
             'mask': mask,
             'caption': meta.get('caption', ''),
+            'prompt_embed': meta.get('prompt_embed', torch.tensor([])),
+            'pooled_prompt_embed': meta.get('pooled_prompt_embed', torch.tensor([])),
+            'prompt_2_embed': meta.get('prompt_2_embed', torch.tensor([])),
+            'pooled_prompt_2_embed': meta.get('pooled_prompt_2_embed', torch.tensor([])),
+            't5_prompt_embed': meta.get('t5_prompt_embed', torch.tensor([])),
         }
 
 
@@ -223,7 +242,7 @@ class SD3LightPretrainDataLoader:
                     self.sampler.set_epoch(self.epoch)
                     self.data_iter = iter(self.dataloader)
                     batch = next(self.data_iter)
-                features, label = self.model.prepare_inputs(batch, timestep_quantile=self.eval_quantile)
+                features, label = self._prepare_batch(batch)
                 target, mask = label
                 target = self._broadcast_target(target)
                 label = (target, mask)
@@ -245,6 +264,15 @@ class SD3LightPretrainDataLoader:
         result = [None] * dist.get_world_size(process_group)
         torch.distributed.all_gather_object(result, self.epoch, group=process_group)
         self.epoch = max(result)
+
+    def _prepare_batch(self, batch):
+        inputs = dict(batch)
+        mask = inputs.get('mask', None)
+        if mask is not None and torch.is_tensor(mask) and mask.numel() == 0:
+            mask = None
+        inputs['mask'] = mask
+        features, label = self.model.prepare_inputs(inputs, timestep_quantile=self.eval_quantile)
+        return features, label
 
     def state_dict(self):
         return {
