@@ -494,8 +494,7 @@ class DirectoryDataset:
             frame_buckets.append(1)
         frame_buckets.sort()
         self.frame_buckets = np.array(frame_buckets)
-        # Free heavier references after caches are built.
-        self._finalized = False
+
 
     def validate(self):
         resolutions = self.directory_config.get('resolutions', self.dataset_config.get('resolutions', []))
@@ -956,13 +955,7 @@ class Dataset:
             new_len = int(len(self) * subsample_ratio)
             self.iteration_order = self.iteration_order[:new_len]
 
-        # Once everything is ready for training, drop metadata that is no longer needed to
-        # reduce forked worker memory / COW pressure.
-        if not self._finalized:
-            for directory_dataset in self.directory_datasets:
-                for size_bucket_dataset in directory_dataset.get_size_bucket_datasets():
-                    size_bucket_dataset.finalize_for_training()
-            self._finalized = True
+
 
     def set_eval_quantile(self, quantile):
         self.eval_quantile = quantile

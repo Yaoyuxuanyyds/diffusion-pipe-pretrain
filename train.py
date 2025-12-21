@@ -543,10 +543,10 @@ if __name__ == '__main__':
         'steps_per_print': config.get('steps_per_print', 1),
     }
     caching_batch_size = config.get('caching_batch_size', 1)
-    # dataset_manager = dataset_util.DatasetManager(model, regenerate_cache=regenerate_cache, trust_cache=args.trust_cache, caching_batch_size=caching_batch_size)
+    dataset_manager = dataset_util.DatasetManager(model, regenerate_cache=regenerate_cache, trust_cache=args.trust_cache, caching_batch_size=caching_batch_size)
 
     train_data = dataset_util.Dataset(dataset_config, model, skip_dataset_validation=args.i_know_what_i_am_doing)
-    # dataset_manager.register(train_data)
+    dataset_manager.register(train_data)
 
     eval_data_map = {}
     for i, eval_dataset in enumerate(config['eval_datasets']):
@@ -559,11 +559,11 @@ if __name__ == '__main__':
         with open(config_path) as f:
             eval_dataset_config = toml.load(f)
         eval_data_map[name] = dataset_util.Dataset(eval_dataset_config, model, skip_dataset_validation=args.i_know_what_i_am_doing)
-        # dataset_manager.register(eval_data_map[name])
+        dataset_manager.register(eval_data_map[name])
 
 
 
-    # dataset_manager.cache()
+    dataset_manager.cache()
     if args.cache_only:
         quit()
 
