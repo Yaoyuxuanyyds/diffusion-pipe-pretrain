@@ -102,7 +102,7 @@ def _map_and_cache(dataset, map_fn, cache_dir, cache_file_prefix='', new_fingerp
     assert cache_size <= dataset_size
     if cache_size == dataset_size:
         return cache
-    dataset = dataset.select(range(cache_size, dataset_size), keep_in_memory=True)
+    dataset = dataset.select(range(cache_size, dataset_size))
 
     # Let each worker process know its rank
     manager = mp.Manager()
@@ -152,6 +152,8 @@ def _map_and_cache(dataset, map_fn, cache_dir, cache_file_prefix='', new_fingerp
             cache.add(example)
 
     pool.close()
+    pool.join()
+    manager.shutdown()
     cache.finalize_current_shard()
     return cache
 
@@ -184,7 +186,7 @@ def _cache_text_embeddings(metadata_dataset, map_fn, i, cache_dir, regenerate_ca
                 result['latents_idx'].append(indices[i])
         return result
 
-    flattened_captions = metadata_dataset.map(flatten_captions, batched=True, with_indices=True, keep_in_memory=True, remove_columns=metadata_dataset.column_names)
+    flattened_captions = metadata_dataset.map(flatten_captions, batched=True, with_indices=True, remove_columns=metadata_dataset.column_names)
         # Ensure we always work with pure Python objects (no shared Arrow buffers) when caching text embeddings,
     # so batched tokenization cannot read a mutated view of the captions.
     flattened_captions = flattened_captions.with_format("python")
@@ -960,6 +962,11 @@ class Dataset:
     def set_eval_quantile(self, quantile):
         self.eval_quantile = quantile
 
+    def finalize_for_training(self):
+        for directory_dataset in self.directory_datasets:
+            for size_bucket_dataset in directory_dataset.get_size_bucket_datasets():
+                size_bucket_dataset.finalize_for_training()
+
     def __len__(self):
         assert self.post_init_called
         return len(self.iteration_order)
@@ -1233,6 +1240,7 @@ class DatasetManager:
             ds.cache_latents(None, trust_cache=True)
             for i in range(1, len(self.text_encoders)+1):
                 ds.cache_text_embeddings(None, i)
+            ds.finalize_for_training()
 
     @torch.no_grad()
     def _handle_task(self, task):
