@@ -108,21 +108,12 @@ class SD3LightManifestBuilder:
         return hashlib.md5((self.model_name + content).encode()).hexdigest()
 
     def build(self, regenerate_cache=False):
-        cache_base = self.cache_root / f'sd3_stream_{self.model_name}'
-        cache_base.mkdir(parents=True, exist_ok=True)
         manifest_fp = self._fingerprint()
-        manifest_file = cache_base / 'manifest.json'
-        if manifest_file.exists() and not regenerate_cache:
-            with open(manifest_file) as f:
-                data = json.load(f)
-            if data.get('fingerprint') == manifest_fp:
-                return cache_base, manifest_fp
-            else:
-                for fpath in cache_base.glob('*'):
-                    if fpath.is_file():
-                        fpath.unlink()
 
-        writer = ShardCacheWriter(cache_base, manifest_fp, shard_size=self.shard_size)
+        def _cache_base_for_directory(dir_path: Path):
+            cache_base = dir_path / 'cache' / f'sd3_stream_{self.model_name}'
+            cache_base.mkdir(parents=True, exist_ok=True)
+            return cache_base
 
         def _get_target_size(directory_config):
             # only support a single resolution entry like [256] or [[256, 256]]
@@ -136,9 +127,24 @@ class SD3LightManifestBuilder:
                 return (int(res[0]), int(res[1]))
             return (int(res), int(res))
 
+        cache_dirs = []
         entries = []
         for directory in self.dataset_config['directory']:
             root = Path(directory['path'])
+            cache_base = _cache_base_for_directory(root)
+            cache_dirs.append(cache_base)
+            manifest_file = cache_base / 'manifest.json'
+            if manifest_file.exists() and not regenerate_cache:
+                with open(manifest_file) as f:
+                    data = json.load(f)
+                if data.get('fingerprint') == manifest_fp:
+                    # skip reading files from this directory; will be loaded later
+                    continue
+                else:
+                    for fpath in cache_base.glob('*'):
+                        if fpath.is_file():
+                            fpath.unlink()
+
             caption_prefix = directory.get('caption_prefix', '')
             target_size = _get_target_size(directory)
             files = _list_media_files(root)
@@ -152,6 +158,7 @@ class SD3LightManifestBuilder:
                     'path': str(media_path),
                     'caption': caption,
                     'target_size': target_size,
+                    'cache_base': cache_base,
                 })
 
         class _CacheDataset(torch.utils.data.Dataset):
@@ -174,6 +181,7 @@ class SD3LightManifestBuilder:
                     'pixel_values': pixel_values,
                     'mask': mask,
                     'caption': e['caption'],
+                    'cache_base': e['cache_base'],
                 }
 
         def _collate_fn(batch):
@@ -181,6 +189,7 @@ class SD3LightManifestBuilder:
                 'pixel_values': [b['pixel_values'] for b in batch],
                 'mask': [b['mask'] for b in batch],
                 'caption': [b['caption'] for b in batch],
+                'cache_base': [b['cache_base'] for b in batch],
             }
 
         dataloader = torch.utils.data.DataLoader(
@@ -216,10 +225,13 @@ class SD3LightManifestBuilder:
                 text_dict[k] = v.detach().cpu()
 
             masks = batch['mask']
+            cache_bases = batch['cache_base']
             for idx in range(len(captions_batch)):
                 mask_tensor = masks[idx]
                 if mask_tensor is None:
                     mask_tensor = torch.tensor([])
+                cache_base = cache_bases[idx]
+                writer = ShardCacheWriter(cache_base, manifest_fp, shard_size=self.shard_size)
                 sample = {
                     'latents': latents[idx],
                     'mask': mask_tensor.cpu(),
@@ -231,8 +243,11 @@ class SD3LightManifestBuilder:
                     't5_prompt_embed': text_dict.get('t5_prompt_embed', torch.tensor([]))[idx] if text_dict.get('t5_prompt_embed', None) is not None and text_dict.get('t5_prompt_embed', torch.tensor([])).numel() > 0 else torch.tensor([]),
                 }
                 writer.add(sample)
-        writer.finalize()
-        return cache_base, manifest_fp
+                writer.finalize()
+                with open(cache_base / 'manifest.json', 'w') as f:
+                    json.dump({'fingerprint': manifest_fp}, f)
+        # return the first directory's cache for compatibility
+        return cache_dirs[0] if cache_dirs else self.cache_root, manifest_fp
 
 
 class SD3LightPretrainDataset(torch.utils.data.Dataset):
