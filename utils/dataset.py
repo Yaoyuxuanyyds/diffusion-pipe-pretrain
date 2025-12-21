@@ -61,7 +61,17 @@ class SD3LightManifestBuilder:
     the minimal metadata required to stream data efficiently at train time.
     """
 
-    def __init__(self, dataset_config, model, model_name: str, cache_root: Path, shard_size: int = 512, caching_batch_size: int = 1, caching_num_workers: int = 0):
+    def __init__(
+        self,
+        dataset_config,
+        model,
+        model_name: str,
+        cache_root: Path,
+        shard_size: int = 512,
+        caching_batch_size: int = 1,
+        caching_num_workers: int = 0,
+        caching_device: str = "auto",
+    ):
         self.dataset_config = dataset_config
         self.model = model
         self.model_name = model_name
@@ -69,16 +79,29 @@ class SD3LightManifestBuilder:
         self.shard_size = shard_size if shard_size is not None else caching_batch_size
         self.caching_batch_size = caching_batch_size
         self.caching_num_workers = caching_num_workers
+        if caching_device == "auto":
+            caching_device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.caching_device = torch.device(caching_device)
         self.cache_root = cache_root
         self.preprocess_media_fn = self.model.get_preprocess_media_file_fn()
-        self.vae_fn = self.model.get_call_vae_fn(self.model.get_vae())
+        self.vae = self.model.get_vae()
+        if isinstance(self.vae, torch.nn.Module):
+            self.vae = self.vae.to(self.caching_device)
+        self.vae_fn = self.model.get_call_vae_fn(self.vae)
         self.text_encoders = self.model.get_text_encoders()
+        self.text_encoders = [
+            te.to(self.caching_device) if isinstance(te, torch.nn.Module) else te
+            for te in self.text_encoders
+        ]
         self.text_fns = [self.model.get_call_text_encoder_fn(te) for te in self.text_encoders]
         # ensure inference mode
-        self.model.get_vae().eval()
+        if isinstance(self.vae, torch.nn.Module):
+            self.vae.eval()
         for te in self.text_encoders:
             if hasattr(te, "eval"):
                 te.eval()
+        if is_main_process():
+            print(f"[SD3 cache] caching_device={self.caching_device}, vae_device={getattr(self.vae, 'device', 'n/a')}, text_encoders={len(self.text_encoders)}")
 
     def _fingerprint(self):
         content = json.dumps(self.dataset_config, sort_keys=True)
@@ -169,12 +192,13 @@ class SD3LightManifestBuilder:
             pin_memory=True,
         )
 
-        device = self.model.get_vae().device
-        dtype = self.model.get_vae().dtype
+        device = self.caching_device
+        dtype = self.vae.dtype if hasattr(self.vae, "dtype") else torch.float32
         for batch in tqdm(dataloader, desc='encoding cache batches'):
-            with torch.inference_mode():
+            with torch.inference_mode(), torch.cuda.amp.autocast(enabled=device.type == "cuda", dtype=dtype):
                 pixel_batch = torch.stack(batch['pixel_values']).to(device, dtype=dtype, non_blocking=True)
-                latents = self.vae_fn(pixel_batch)['latents'].detach().cpu()
+                latents = self.vae_fn(pixel_batch)['latents']
+                assert latents.device == device, f"latents on {latents.device}, expected {device}"
                 captions_batch = batch['caption']
                 is_video = [False] * len(captions_batch)
 
@@ -182,7 +206,14 @@ class SD3LightManifestBuilder:
                 for fn in self.text_fns:
                     td = fn(captions_batch, is_video)
                     for k, v in td.items():
-                        text_dict[k] = v.detach().cpu()
+                        assert isinstance(v, torch.Tensor), f"text encoder returned non-tensor for key {k}"
+                        if v.device != device:
+                            v = v.to(device)
+                        text_dict[k] = v
+
+            latents = latents.detach().cpu()
+            for k, v in list(text_dict.items()):
+                text_dict[k] = v.detach().cpu()
 
             masks = batch['mask']
             for idx in range(len(captions_batch)):

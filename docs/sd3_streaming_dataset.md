@@ -98,3 +98,4 @@ dataloader_prefetch_per_worker = 2
   caching_batch_size = 8
   ```
 - 若未显式设置 `sd3_shard_size`，默认与 `caching_batch_size` 相同，以减少已编码批次被再次拆分的开销。
+- `caching_device` 可设为 `"auto"`（默认，优先 CUDA）或显式 `"cuda"` / `"cpu"`；编码阶段会把 VAE、文本编码器迁移到该设备并在 CUDA 上启用 amp。
