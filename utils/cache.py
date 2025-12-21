@@ -1,144 +1,200 @@
-import sqlite3
-from pathlib import Path
+import json
 import os
-import io
-from collections import defaultdict
+from collections import OrderedDict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable, List, Optional
 
 import torch
 
 
-class Cache:
-    def __init__(self, path: str, fingerprint: str, shard_size_gb=1):
-        self.path = Path(path)
+@dataclass
+class ShardInfo:
+    path: Path
+    length: int
+
+
+class ShardCacheWriter:
+    """
+    A lightweight, append-only sharded cache writer.
+
+    Key goals compared to the previous Cache:
+    - No SQLite or extra processes.
+    - Fully deterministic shards, each owned by the main process.
+    - Simple manifest that can be memory-mapped and shared by dataloader workers.
+    """
+
+    def __init__(
+        self,
+        cache_dir: Path,
+        fingerprint: str,
+        shard_size: int = 512,
+        existing_shards: Optional[List[ShardInfo]] = None,
+        start_total: int = 0,
+    ):
+        self.cache_dir = Path(cache_dir)
         self.fingerprint = fingerprint
-        self.metadata_db = self.path / 'metadata.db'
-        self.shard_size_gb = shard_size_gb
-        os.makedirs(self.path, exist_ok=True)
+        self.shard_size = shard_size
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.manifest_file = self.cache_dir / "manifest.json"
+        self.items: List[Any] = []
+        self.shards: List[ShardInfo] = existing_shards or []
+        self.total = start_total
 
-        self.init()
+    def add(self, item: Any):
+        self.items.append(item)
+        if len(self.items) >= self.shard_size:
+            self._flush()
 
+    def _flush(self):
+        if not self.items:
+            return
+        shard_id = len(self.shards)
+        shard_path = self.cache_dir / f"shard_{shard_id:06d}.pt"
+        torch.save(self.items, shard_path)
+        self.shards.append(ShardInfo(path=shard_path, length=len(self.items)))
+        self.total += len(self.items)
+        self.items = []
+
+    def finalize(self):
+        self._flush()
+        manifest = {
+            "fingerprint": self.fingerprint,
+            "total": self.total,
+            "shard_size": self.shard_size,
+            "shards": [
+                {"path": shard.path.name, "length": shard.length}
+                for shard in self.shards
+            ],
+        }
+        with open(self.manifest_file, "w") as f:
+            json.dump(manifest, f)
+
+
+class ShardCache:
+    """
+    Reader for sharded caches created by ShardCacheWriter.
+    Keeps a small LRU of loaded shards to minimize disk reads while keeping memory bounded.
+    """
+
+    def __init__(self, cache_dir: Path, expected_fingerprint: str, max_shards_in_memory: int = 2):
+        self.cache_dir = Path(cache_dir)
+        with open(self.cache_dir / "manifest.json") as f:
+            manifest = json.load(f)
+
+        if manifest["fingerprint"] != expected_fingerprint:
+            raise ValueError(
+                f"Cache fingerprint mismatch: expected {expected_fingerprint}, got {manifest['fingerprint']}"
+            )
+
+        self.total = manifest["total"]
+        self.shards: List[ShardInfo] = []
+        for shard in manifest["shards"]:
+            self.shards.append(
+                ShardInfo(
+                    path=self.cache_dir / shard["path"],
+                    length=shard["length"],
+                )
+            )
+        self.max_shards_in_memory = max_shards_in_memory
+        self._shard_cache: OrderedDict[int, List[Any]] = OrderedDict()
 
     def __len__(self):
-        return len(self.items)
+        return self.total
 
+    def _load_shard(self, shard_id: int):
+        if shard_id in self._shard_cache:
+            self._shard_cache.move_to_end(shard_id)
+            return self._shard_cache[shard_id]
+        shard = torch.load(self.shards[shard_id].path, map_location="cpu")
+        self._shard_cache[shard_id] = shard
+        if len(self._shard_cache) > self.max_shards_in_memory:
+            self._shard_cache.popitem(last=False)
+        return shard
+
+    def __getitem__(self, idx: int):
+        if idx < 0 or idx >= self.total:
+            raise IndexError(idx)
+        shard_id = 0
+        offset = idx
+        for i, shard in enumerate(self.shards):
+            if offset < shard.length:
+                shard_id = i
+                break
+            offset -= shard.length
+        shard_data = self._load_shard(shard_id)
+        return shard_data[offset]
+
+
+def streaming_write(cache_dir: Path, fingerprint: str, data_iter: Iterable[Any], shard_size: int = 512):
+    writer = ShardCacheWriter(cache_dir, fingerprint, shard_size=shard_size)
+    for item in data_iter:
+        writer.add(item)
+    writer.finalize()
+
+
+class Cache:
+    """
+    Backwards-compatible facade used by legacy dataset paths.
+    Internally delegates to the new ShardCacheWriter/ShardCache.
+    """
+
+    def __init__(self, path: str, fingerprint: str, shard_size_gb: float = 1):
+        self.path = Path(path)
+        self.fingerprint = fingerprint
+        self.shard_size = int(max(1, shard_size_gb * 1024))  # roughly align with old behavior
+        self.path.mkdir(parents=True, exist_ok=True)
+        manifest = self.path / "manifest.json"
+        if manifest.exists():
+            with open(manifest) as f:
+                data = json.load(f)
+            if data.get("fingerprint") != fingerprint:
+                self.clear()
+                self._init_empty()
+            else:
+                self.total = data["total"]
+                self.shards = [
+                    ShardInfo(path=self.path / shard["path"], length=shard["length"])
+                    for shard in data["shards"]
+                ]
+                self.reader = ShardCache(self.path, fingerprint)
+                self.writer = ShardCacheWriter(
+                    self.path,
+                    fingerprint,
+                    shard_size=self.shard_size,
+                    existing_shards=self.shards,
+                    start_total=self.total,
+                )
+        else:
+            self._init_empty()
+
+    def _init_empty(self):
+        self.total = 0
+        self.shards: List[ShardInfo] = []
+        self.reader: Optional[ShardCache] = None
+        self.writer = ShardCacheWriter(self.path, self.fingerprint, shard_size=self.shard_size)
+
+    def __len__(self):
+        return self.total + len(self.writer.items)
 
     def __getitem__(self, idx):
-        assert isinstance(idx, int)
-        shard_id, shard_index = self.items[idx]
-        offset, size = self.shard_metadata[shard_id][shard_index]
-        f = self.open_files.setdefault(shard_id, open(self.path / f'shard_{shard_id}.bin', 'rb'))
-        f.seek(offset)
-        byte_string = f.read(size)
-        buffer = io.BytesIO(byte_string)
-        item = torch.load(buffer, map_location='cpu')
-        return item
+        if self.reader is None:
+            self.writer.finalize()
+            self.reader = ShardCache(self.path, self.fingerprint)
+        return self.reader[idx]
 
-
-    def init(self):
-        print('[CACHE] Initializing')
-        # create database
-        self.con = sqlite3.connect(self.metadata_db, autocommit=False)
-
-        # check fingerprint, clear cache if different
-        self.con.execute('CREATE TABLE IF NOT EXISTS fingerprint(value)')
-        existing_fingerprint = self.con.execute('SELECT value FROM fingerprint').fetchone()
-        if existing_fingerprint is not None:
-            existing_fingerprint = existing_fingerprint[0]
-            print(f'[CACHE] Existing cache has fingerprint {existing_fingerprint}')
-            if self.fingerprint != existing_fingerprint:
-                print('[CACHE] Fingerprint changed, deleting existing cache files')
-                self.clear()
-                return
-        else:
-            print(f'[CACHE] Storing new fingerprint: {self.fingerprint}')
-            self.con.execute('INSERT INTO fingerprint VALUES(?)', (self.fingerprint,))
-
-        # items table, current length, next shard index
-        self.con.execute('CREATE TABLE IF NOT EXISTS items(shard, shard_index)')
-        self.items = self.con.execute('SELECT shard, shard_index FROM items').fetchall() or []
-        max_existing_shard = -1
-        for shard, _ in self.items:
-            max_existing_shard = max(max_existing_shard, shard)
-        self.shard = max_existing_shard + 1  # current shard to write to
-        self.shard_file = None
-        print(f'[CACHE] Existing cache length: {len(self)}')
-
-        # shard metadata
-        self.shard_metadata = defaultdict(list)
-        for table_name, in self.con.execute('SELECT name FROM sqlite_master').fetchall():
-            if table_name.startswith('shard_'):
-                shard_id = int(table_name.split('_')[-1])
-                for entry in self.con.execute(f'SELECT offset, size FROM {table_name}').fetchall():
-                    self.shard_metadata[shard_id].append(entry)
-        self.open_files = {}
-
-        # commit
-        self.con.commit()
-
-
-    def clear(self):
-        '''Deletes all cache files from disk. Calls init() again.'''
-        self.con.close()
-        os.remove(self.metadata_db)
-        for bin_path in self.path.glob('*.bin'):
-            os.remove(bin_path)
-        self.init()
-
-
-    def create_new_shard(self):
-        self.shard_file = open(self.path / f'shard_{self.shard}.bin', 'wb')
-        self.shard_table = f'shard_{self.shard}'
-        print(f'[CACHE] Creating new shard: {self.shard_table}')
-        self.con.execute(f'CREATE TABLE {self.shard_table}(offset, size)')
-        self.shard_index = 0
-        self.offset = 0
-
+    def add(self, item: Any):
+        self.writer.add(item)
 
     def finalize_current_shard(self):
-        if self.shard_file is None:
-            # no-op if already finalized
-            return
-        self.shard_file.close()
-        self.shard_file = None
-        self.shard += 1
-        self.con.commit()
+        self.writer.finalize()
+        self.total = self.writer.total
+        self.shards = self.writer.shards
+        self.reader = ShardCache(self.path, self.fingerprint)
 
-
-    def add(self, item):
-        if self.shard_file is None:
-            self.create_new_shard()
-        buffer = io.BytesIO()
-        torch.save(item, buffer)
-        bytes_view = buffer.getbuffer()
-        self.shard_file.write(bytes_view)
-
-        # update items metadata
-        item = (self.shard, self.shard_index)
-        self.items.append(item)
-        self.con.execute('INSERT INTO items VALUES(?, ?)', item)
-        self.shard_index += 1
-
-        # update shard metadata
-        size = len(bytes_view)
-        entry = (self.offset, size)
-        self.shard_metadata[self.shard].append(entry)
-        self.con.execute(f'INSERT INTO {self.shard_table} VALUES (?, ?)', entry)
-        self.offset += size
-
-        # create new shard when existing one is large enough
-        current_size_gb = self.shard_file.tell() / 1_000_000_000
-        if current_size_gb >= self.shard_size_gb:
-            self.finalize_current_shard()
-
-
-# for testing
-if __name__ == '__main__':
-    cache = Cache('/home/anon/tmp/cache_test', 'foo', shard_size_gb=0.001)
-
-    tensor = torch.zeros((100_000,))
-    for _ in range(10):
-        cache.add({'key1': tensor})
-    cache.finalize_current_shard()
-
-    print(cache[0])
-    print(cache[1])
+    def clear(self):
+        if self.path.exists():
+            for f in self.path.glob("*"):
+                if f.is_file():
+                    f.unlink()
+        self._init_empty()
