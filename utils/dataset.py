@@ -127,6 +127,17 @@ class SD3LightManifestBuilder:
                 return (int(res[0]), int(res[1]))
             return (int(res), int(res))
 
+        def _is_valid_manifest(manifest: dict) -> bool:
+            required_keys = {"fingerprint", "total", "shards", "shard_size"}
+            if not required_keys.issubset(manifest.keys()):
+                return False
+            if not isinstance(manifest.get("shards", None), list):
+                return False
+            for shard in manifest["shards"]:
+                if not isinstance(shard, dict) or not {"path", "length"}.issubset(shard.keys()):
+                    return False
+            return True
+
         cache_dirs = []
         entries = []
         for directory in self.dataset_config['directory']:
@@ -137,13 +148,13 @@ class SD3LightManifestBuilder:
             if manifest_file.exists() and not regenerate_cache:
                 with open(manifest_file) as f:
                     data = json.load(f)
-                if data.get('fingerprint') == manifest_fp:
+                if data.get('fingerprint') == manifest_fp and _is_valid_manifest(data):
                     # skip reading files from this directory; will be loaded later
                     continue
-                else:
-                    for fpath in cache_base.glob('*'):
-                        if fpath.is_file():
-                            fpath.unlink()
+
+                for fpath in cache_base.glob('*'):
+                    if fpath.is_file():
+                        fpath.unlink()
 
             caption_prefix = directory.get('caption_prefix', '')
             target_size = _get_target_size(directory)
