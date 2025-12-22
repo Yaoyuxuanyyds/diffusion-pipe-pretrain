@@ -71,6 +71,10 @@ dataloader_prefetch_per_worker = 2
 - 仅 sd3_light_pretrain 走新路径；其他训练类型沿用原有 DatasetManager/缓存。
 - 老接口仍可用（`Cache` 兼容层）；如需完全禁用新方案，设 `sd3_streaming_dataset=false`。
 
+## 多目录支持
+- `sd3_streaming_dataset=true` 时，可在 dataset config 中声明多个 `[[directory]]`。每个目录会各自产生自己的 manifest/shard（仍放在目录下的 `cache/sd3_stream_<model_name>`），训练时由 `MultiShardCache` 自动合并这些缓存，按配置顺序遍历全部样本。
+- 如果某个目录的 manifest 指纹不匹配，会触发该目录的缓存重建；其他指纹已匹配的目录会被复用。
+
 ## 验证建议
 - 观察主进程与 worker 的 RSS：manifest 构建后应稳定，训练中不随 step 线性上升。
 - 压测 shard LRU：调小 `max_shards_in_memory`（构造 `ShardCache` 时）应仍能正常迭代，但磁盘 IO 增加。

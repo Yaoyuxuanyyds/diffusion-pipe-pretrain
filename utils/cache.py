@@ -126,6 +126,64 @@ class ShardCache:
         return shard_data[offset]
 
 
+class MultiShardCache:
+    """
+    Reader that aggregates multiple ShardCache directories sharing the same fingerprint.
+    This allows training to seamlessly iterate over caches built from multiple dataset
+    directories without copying shards into a single folder.
+    """
+
+    def __init__(self, cache_dirs: List[Path], expected_fingerprint: str, max_shards_in_memory: int = 2):
+        self.cache_dirs = [Path(p) for p in cache_dirs]
+        self.shards: List[ShardInfo] = []
+        self.total = 0
+        for cache_dir in self.cache_dirs:
+            manifest_path = cache_dir / "manifest.json"
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            if manifest["fingerprint"] != expected_fingerprint:
+                raise ValueError(
+                    f"Cache fingerprint mismatch in {cache_dir}: expected {expected_fingerprint}, "
+                    f"got {manifest['fingerprint']}"
+                )
+            for shard in manifest["shards"]:
+                self.shards.append(
+                    ShardInfo(
+                        path=cache_dir / shard["path"],
+                        length=shard["length"],
+                    )
+                )
+            self.total += manifest["total"]
+        self.max_shards_in_memory = max_shards_in_memory
+        self._shard_cache: OrderedDict[int, List[Any]] = OrderedDict()
+
+    def __len__(self):
+        return self.total
+
+    def _load_shard(self, shard_id: int):
+        if shard_id in self._shard_cache:
+            self._shard_cache.move_to_end(shard_id)
+            return self._shard_cache[shard_id]
+        shard = torch.load(self.shards[shard_id].path, map_location="cpu")
+        self._shard_cache[shard_id] = shard
+        if len(self._shard_cache) > self.max_shards_in_memory:
+            self._shard_cache.popitem(last=False)
+        return shard
+
+    def __getitem__(self, idx: int):
+        if idx < 0 or idx >= self.total:
+            raise IndexError(idx)
+        shard_id = 0
+        offset = idx
+        for i, shard in enumerate(self.shards):
+            if offset < shard.length:
+                shard_id = i
+                break
+            offset -= shard.length
+        shard_data = self._load_shard(shard_id)
+        return shard_data[offset]
+
+
 def streaming_write(cache_dir: Path, fingerprint: str, data_iter: Iterable[Any], shard_size: int = 512):
     writer = ShardCacheWriter(cache_dir, fingerprint, shard_size=shard_size)
     for item in data_iter:
