@@ -138,6 +138,19 @@ class SD3LightManifestBuilder:
                     return False
             return True
 
+        def _atomic_write_json(path: Path, data: dict):
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            with open(tmp_path, "w") as f:
+                json.dump(data, f)
+            tmp_path.replace(path)
+
+        def _load_manifest(manifest_file: Path) -> dict | None:
+            try:
+                with open(manifest_file) as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                return None
+
         def _normalize_manifest(manifest_file: Path, manifest_data: dict | None) -> dict | None:
             if manifest_data is None:
                 return None
@@ -147,8 +160,7 @@ class SD3LightManifestBuilder:
             manifest_data = dict(manifest_data)
             manifest_data.pop("fingerprint", None)
             manifest_data["completed"] = True
-            with open(manifest_file, "w") as f:
-                json.dump(manifest_data, f)
+            _atomic_write_json(manifest_file, manifest_data)
             return manifest_data
 
         def _clear_cache_dir(cache_base: Path):
@@ -187,8 +199,7 @@ class SD3LightManifestBuilder:
             manifest_file = cache_base / 'manifest.json'
             manifest_data = None
             if manifest_file.exists():
-                with open(manifest_file) as f:
-                    manifest_data = json.load(f)
+                manifest_data = _load_manifest(manifest_file)
                 manifest_data = _normalize_manifest(manifest_file, manifest_data)
             needs_build = regenerate_cache or (not _is_valid_manifest(manifest_data))
             directories.append((directory, cache_base, needs_build))

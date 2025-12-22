@@ -14,6 +14,21 @@ class ShardInfo:
     length: int
 
 
+def _atomic_write_json(path: Path, data: dict):
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp_path, "w") as f:
+        json.dump(data, f)
+    tmp_path.replace(path)
+
+
+def _load_manifest(manifest_path: Path) -> dict:
+    try:
+        with open(manifest_path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"Cache manifest at {manifest_path} is unreadable; please regenerate the cache.") from exc
+
+
 class ShardCacheWriter:
     """
     A lightweight, append-only sharded cache writer.
@@ -65,8 +80,7 @@ class ShardCacheWriter:
             ],
             "completed": True,
         }
-        with open(self.manifest_file, "w") as f:
-            json.dump(manifest, f)
+        _atomic_write_json(self.manifest_file, manifest)
 
 
 class ShardCache:
@@ -82,16 +96,14 @@ class ShardCache:
     ):
         self.cache_dir = Path(cache_dir)
         manifest_path = self.cache_dir / "manifest.json"
-        with open(manifest_path) as f:
-            manifest = json.load(f)
+        manifest = _load_manifest(manifest_path)
 
         # Backward compatibility: old manifests used fingerprint. Treat them as completed and rewrite.
         if "fingerprint" in manifest or not manifest.get("completed", False):
             manifest = dict(manifest)
             manifest.pop("fingerprint", None)
             manifest["completed"] = True
-            with open(manifest_path, "w") as f:
-                json.dump(manifest, f)
+            _atomic_write_json(manifest_path, manifest)
 
         self.total = manifest["total"]
         self.shards: List[ShardInfo] = []
@@ -149,14 +161,12 @@ class MultiShardCache:
         self.total = 0
         for cache_dir in self.cache_dirs:
             manifest_path = cache_dir / "manifest.json"
-            with open(manifest_path) as f:
-                manifest = json.load(f)
+            manifest = _load_manifest(manifest_path)
             if "fingerprint" in manifest or not manifest.get("completed", False):
                 manifest = dict(manifest)
                 manifest.pop("fingerprint", None)
                 manifest["completed"] = True
-                with open(manifest_path, "w") as f:
-                    json.dump(manifest, f)
+                _atomic_write_json(manifest_path, manifest)
             for shard in manifest["shards"]:
                 self.shards.append(
                     ShardInfo(
@@ -214,14 +224,12 @@ class Cache:
         self.path.mkdir(parents=True, exist_ok=True)
         manifest = self.path / "manifest.json"
         if manifest.exists():
-            with open(manifest) as f:
-                data = json.load(f)
+            data = _load_manifest(manifest)
             if data.get("fingerprint") is not None or not data.get("completed", False):
                 # Legacy manifest: drop fingerprint and mark completed.
                 data.pop("fingerprint", None)
                 data["completed"] = True
-                with open(manifest, "w") as f:
-                    json.dump(data, f)
+                _atomic_write_json(manifest, data)
             self.total = data["total"]
             self.shards = [
                 ShardInfo(path=self.path / shard["path"], length=shard["length"])
