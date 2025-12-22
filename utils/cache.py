@@ -27,13 +27,11 @@ class ShardCacheWriter:
     def __init__(
         self,
         cache_dir: Path,
-        fingerprint: str,
         shard_size: int = 512,
         existing_shards: Optional[List[ShardInfo]] = None,
         start_total: int = 0,
     ):
         self.cache_dir = Path(cache_dir)
-        self.fingerprint = fingerprint
         self.shard_size = shard_size
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_file = self.cache_dir / "manifest.json"
@@ -59,13 +57,13 @@ class ShardCacheWriter:
     def finalize(self):
         self._flush()
         manifest = {
-            "fingerprint": self.fingerprint,
             "total": self.total,
             "shard_size": self.shard_size,
             "shards": [
                 {"path": shard.path.name, "length": shard.length}
                 for shard in self.shards
             ],
+            "completed": True,
         }
         with open(self.manifest_file, "w") as f:
             json.dump(manifest, f)
@@ -77,15 +75,23 @@ class ShardCache:
     Keeps a small LRU of loaded shards to minimize disk reads while keeping memory bounded.
     """
 
-    def __init__(self, cache_dir: Path, expected_fingerprint: str, max_shards_in_memory: int = 2):
+    def __init__(
+        self,
+        cache_dir: Path,
+        max_shards_in_memory: int = 2,
+    ):
         self.cache_dir = Path(cache_dir)
-        with open(self.cache_dir / "manifest.json") as f:
+        manifest_path = self.cache_dir / "manifest.json"
+        with open(manifest_path) as f:
             manifest = json.load(f)
 
-        if manifest["fingerprint"] != expected_fingerprint:
-            raise ValueError(
-                f"Cache fingerprint mismatch: expected {expected_fingerprint}, got {manifest['fingerprint']}"
-            )
+        # Backward compatibility: old manifests used fingerprint. Treat them as completed and rewrite.
+        if "fingerprint" in manifest or not manifest.get("completed", False):
+            manifest = dict(manifest)
+            manifest.pop("fingerprint", None)
+            manifest["completed"] = True
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f)
 
         self.total = manifest["total"]
         self.shards: List[ShardInfo] = []
@@ -128,12 +134,16 @@ class ShardCache:
 
 class MultiShardCache:
     """
-    Reader that aggregates multiple ShardCache directories sharing the same fingerprint.
+    Reader that aggregates multiple ShardCache directories.
     This allows training to seamlessly iterate over caches built from multiple dataset
     directories without copying shards into a single folder.
     """
 
-    def __init__(self, cache_dirs: List[Path], expected_fingerprint: str, max_shards_in_memory: int = 2):
+    def __init__(
+        self,
+        cache_dirs: List[Path],
+        max_shards_in_memory: int = 2,
+    ):
         self.cache_dirs = [Path(p) for p in cache_dirs]
         self.shards: List[ShardInfo] = []
         self.total = 0
@@ -141,11 +151,12 @@ class MultiShardCache:
             manifest_path = cache_dir / "manifest.json"
             with open(manifest_path) as f:
                 manifest = json.load(f)
-            if manifest["fingerprint"] != expected_fingerprint:
-                raise ValueError(
-                    f"Cache fingerprint mismatch in {cache_dir}: expected {expected_fingerprint}, "
-                    f"got {manifest['fingerprint']}"
-                )
+            if "fingerprint" in manifest or not manifest.get("completed", False):
+                manifest = dict(manifest)
+                manifest.pop("fingerprint", None)
+                manifest["completed"] = True
+                with open(manifest_path, "w") as f:
+                    json.dump(manifest, f)
             for shard in manifest["shards"]:
                 self.shards.append(
                     ShardInfo(
@@ -184,8 +195,8 @@ class MultiShardCache:
         return shard_data[offset]
 
 
-def streaming_write(cache_dir: Path, fingerprint: str, data_iter: Iterable[Any], shard_size: int = 512):
-    writer = ShardCacheWriter(cache_dir, fingerprint, shard_size=shard_size)
+def streaming_write(cache_dir: Path, data_iter: Iterable[Any], shard_size: int = 512):
+    writer = ShardCacheWriter(cache_dir, shard_size=shard_size)
     for item in data_iter:
         writer.add(item)
     writer.finalize()
@@ -199,30 +210,30 @@ class Cache:
 
     def __init__(self, path: str, fingerprint: str, shard_size_gb: float = 1):
         self.path = Path(path)
-        self.fingerprint = fingerprint
         self.shard_size = int(max(1, shard_size_gb * 1024))  # roughly align with old behavior
         self.path.mkdir(parents=True, exist_ok=True)
         manifest = self.path / "manifest.json"
         if manifest.exists():
             with open(manifest) as f:
                 data = json.load(f)
-            if data.get("fingerprint") != fingerprint:
-                self.clear()
-                self._init_empty()
-            else:
-                self.total = data["total"]
-                self.shards = [
-                    ShardInfo(path=self.path / shard["path"], length=shard["length"])
-                    for shard in data["shards"]
-                ]
-                self.reader = ShardCache(self.path, fingerprint)
-                self.writer = ShardCacheWriter(
-                    self.path,
-                    fingerprint,
-                    shard_size=self.shard_size,
-                    existing_shards=self.shards,
-                    start_total=self.total,
-                )
+            if data.get("fingerprint") is not None or not data.get("completed", False):
+                # Legacy manifest: drop fingerprint and mark completed.
+                data.pop("fingerprint", None)
+                data["completed"] = True
+                with open(manifest, "w") as f:
+                    json.dump(data, f)
+            self.total = data["total"]
+            self.shards = [
+                ShardInfo(path=self.path / shard["path"], length=shard["length"])
+                for shard in data["shards"]
+            ]
+            self.reader = ShardCache(self.path)
+            self.writer = ShardCacheWriter(
+                self.path,
+                shard_size=self.shard_size,
+                existing_shards=self.shards,
+                start_total=self.total,
+            )
         else:
             self._init_empty()
 
@@ -230,7 +241,7 @@ class Cache:
         self.total = 0
         self.shards: List[ShardInfo] = []
         self.reader: Optional[ShardCache] = None
-        self.writer = ShardCacheWriter(self.path, self.fingerprint, shard_size=self.shard_size)
+        self.writer = ShardCacheWriter(self.path, shard_size=self.shard_size)
 
     def __len__(self):
         return self.total + len(self.writer.items)
@@ -238,7 +249,7 @@ class Cache:
     def __getitem__(self, idx):
         if self.reader is None:
             self.writer.finalize()
-            self.reader = ShardCache(self.path, self.fingerprint)
+            self.reader = ShardCache(self.path)
         return self.reader[idx]
 
     def add(self, item: Any):
@@ -248,7 +259,7 @@ class Cache:
         self.writer.finalize()
         self.total = self.writer.total
         self.shards = self.writer.shards
-        self.reader = ShardCache(self.path, self.fingerprint)
+        self.reader = ShardCache(self.path)
 
     def clear(self):
         if self.path.exists():

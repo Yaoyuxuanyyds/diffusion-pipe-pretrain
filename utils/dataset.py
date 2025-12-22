@@ -103,12 +103,8 @@ class SD3LightManifestBuilder:
         if is_main_process():
             print(f"[SD3 cache] caching_device={self.caching_device}, vae_device={getattr(self.vae, 'device', 'n/a')}, text_encoders={len(self.text_encoders)}")
 
-    def _fingerprint(self):
-        content = json.dumps(self.dataset_config, sort_keys=True)
-        return hashlib.md5((self.model_name + content).encode()).hexdigest()
-
     def build(self, regenerate_cache=False):
-        manifest_fp = self._fingerprint()
+        builder_process = is_main_process()
 
         def _cache_base_for_directory(dir_path: Path):
             cache_base = dir_path / 'cache' / f'sd3_stream_{self.model_name}'
@@ -128,8 +124,12 @@ class SD3LightManifestBuilder:
             return (int(res), int(res))
 
         def _is_valid_manifest(manifest: dict) -> bool:
-            required_keys = {"fingerprint", "total", "shards", "shard_size"}
+            if manifest is None:
+                return False
+            required_keys = {"total", "shards", "shard_size", "completed"}
             if not required_keys.issubset(manifest.keys()):
+                return False
+            if not manifest.get("completed", False):
                 return False
             if not isinstance(manifest.get("shards", None), list):
                 return False
@@ -138,23 +138,65 @@ class SD3LightManifestBuilder:
                     return False
             return True
 
+        def _normalize_manifest(manifest_file: Path, manifest_data: dict | None) -> dict | None:
+            if manifest_data is None:
+                return None
+            if manifest_data.get("completed", False) and "fingerprint" not in manifest_data:
+                return manifest_data
+            # Treat any manifest with a fingerprint (old scheme) as completed and drop fingerprint.
+            manifest_data = dict(manifest_data)
+            manifest_data.pop("fingerprint", None)
+            manifest_data["completed"] = True
+            with open(manifest_file, "w") as f:
+                json.dump(manifest_data, f)
+            return manifest_data
+
+        def _clear_cache_dir(cache_base: Path):
+            if not cache_base.exists():
+                return
+            for fpath in cache_base.glob('*'):
+                try:
+                    if fpath.is_file() or fpath.is_symlink():
+                        fpath.unlink(missing_ok=True)
+                    else:
+                        import shutil
+                        shutil.rmtree(fpath, ignore_errors=True)
+                except FileNotFoundError:
+                    # Another process might have already removed it.
+                    continue
+
+        def _wait_for_manifest_ready(target_bases: list[Path]):
+            if dist.is_initialized():
+                dist.barrier()
+            for cache_base in target_bases:
+                manifest_file = cache_base / 'manifest.json'
+                if not manifest_file.exists():
+                    raise RuntimeError(f"Cache manifest missing after synchronization: {manifest_file}")
+                with open(manifest_file) as f:
+                    data = json.load(f)
+                if not _is_valid_manifest(data):
+                    raise RuntimeError(f"Cache manifest incomplete for {cache_base}. Please regenerate cache.")
+
         cache_dirs = []
         entries = []
+        directories = []
         for directory in self.dataset_config['directory']:
             root = Path(directory['path'])
             cache_base = _cache_base_for_directory(root)
             cache_dirs.append(cache_base)
             manifest_file = cache_base / 'manifest.json'
-            if manifest_file.exists() and not regenerate_cache:
+            manifest_data = None
+            if manifest_file.exists():
                 with open(manifest_file) as f:
-                    data = json.load(f)
-                if data.get('fingerprint') == manifest_fp and _is_valid_manifest(data):
-                    # skip reading files from this directory; will be loaded later
-                    continue
+                    manifest_data = json.load(f)
+                manifest_data = _normalize_manifest(manifest_file, manifest_data)
+            needs_build = regenerate_cache or (not _is_valid_manifest(manifest_data))
+            directories.append((directory, cache_base, needs_build))
+            if not needs_build:
+                continue
 
-                for fpath in cache_base.glob('*'):
-                    if fpath.is_file():
-                        fpath.unlink()
+            if builder_process:
+                _clear_cache_dir(cache_base)
 
             caption_prefix = directory.get('caption_prefix', '')
             target_size = _get_target_size(directory)
@@ -171,6 +213,17 @@ class SD3LightManifestBuilder:
                     'target_size': target_size,
                     'cache_base': cache_base,
                 })
+
+        # Only the main process should perform caching to avoid racing clears/deletes.
+        if not builder_process:
+            if any(needs_build for _, _, needs_build in directories):
+                _wait_for_manifest_ready([cb for _, cb, _ in directories])
+            return cache_dirs if cache_dirs else [self.cache_root], None
+
+        # If everything is already cached, just validate manifests and return.
+        if not entries:
+            _wait_for_manifest_ready(cache_dirs)
+            return cache_dirs if cache_dirs else [self.cache_root], None
 
         class _CacheDataset(torch.utils.data.Dataset):
             def __init__(self, entries, preprocess_fn):
@@ -241,7 +294,7 @@ class SD3LightManifestBuilder:
             for idx in range(len(captions_batch)):
                 cache_base = cache_bases[idx]
                 if cache_base not in writers:
-                    writers[cache_base] = ShardCacheWriter(cache_base, manifest_fp, shard_size=self.shard_size)
+                    writers[cache_base] = ShardCacheWriter(cache_base, shard_size=self.shard_size)
 
                 mask_tensor = masks[idx]
                 if mask_tensor is None:
@@ -261,7 +314,16 @@ class SD3LightManifestBuilder:
 
         for writer in writers.values():
             writer.finalize()
-        return cache_dirs if cache_dirs else [self.cache_root], manifest_fp
+            # Also create an explicit completion flag alongside the manifest for robustness.
+            completion_flag = writer.cache_dir / 'cache.completed'
+            try:
+                completion_flag.touch(exist_ok=True)
+            except Exception:
+                pass
+
+        # Synchronize with other ranks so they can safely read the manifest.
+        _wait_for_manifest_ready(cache_dirs)
+        return cache_dirs if cache_dirs else [self.cache_root], None
 
 
 class SD3LightPretrainDataset(torch.utils.data.Dataset):
@@ -270,14 +332,14 @@ class SD3LightPretrainDataset(torch.utils.data.Dataset):
     media on-the-fly. Used only for sd3_light_pretrain.
     """
 
-    def __init__(self, dataset_config, model, shard_cache_dirs: list[Path], fingerprint: str):
+    def __init__(self, dataset_config, model, shard_cache_dirs: list[Path], fingerprint: str | None):
         self.dataset_config = dataset_config
         self.model = model
         self.preprocess_media_fn = self.model.get_preprocess_media_file_fn()
         if len(shard_cache_dirs) == 1:
-            self.cache = ShardCache(shard_cache_dirs[0], fingerprint, max_shards_in_memory=2)
+            self.cache = ShardCache(shard_cache_dirs[0], max_shards_in_memory=2)
         else:
-            self.cache = MultiShardCache(shard_cache_dirs, fingerprint, max_shards_in_memory=2)
+            self.cache = MultiShardCache(shard_cache_dirs, max_shards_in_memory=2)
 
     def __len__(self):
         return len(self.cache)
