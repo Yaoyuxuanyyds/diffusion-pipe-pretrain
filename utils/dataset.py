@@ -24,7 +24,7 @@ import multiprocess as mp
 from tqdm import tqdm
 
 from utils.common import is_main_process, VIDEO_EXTENSIONS, round_to_nearest_multiple
-from utils.cache import Cache, ShardCache, ShardCacheWriter
+from utils.cache import Cache, MultiShardCache, ShardCache, ShardCacheWriter
 import comfy.model_management as mm
 import json
 
@@ -261,8 +261,7 @@ class SD3LightManifestBuilder:
 
         for writer in writers.values():
             writer.finalize()
-        # return the first directory's cache for compatibility
-        return cache_dirs[0] if cache_dirs else self.cache_root, manifest_fp
+        return cache_dirs if cache_dirs else [self.cache_root], manifest_fp
 
 
 class SD3LightPretrainDataset(torch.utils.data.Dataset):
@@ -271,11 +270,14 @@ class SD3LightPretrainDataset(torch.utils.data.Dataset):
     media on-the-fly. Used only for sd3_light_pretrain.
     """
 
-    def __init__(self, dataset_config, model, shard_cache_dir: Path, fingerprint: str):
+    def __init__(self, dataset_config, model, shard_cache_dirs: list[Path], fingerprint: str):
         self.dataset_config = dataset_config
         self.model = model
         self.preprocess_media_fn = self.model.get_preprocess_media_file_fn()
-        self.cache = ShardCache(shard_cache_dir, fingerprint, max_shards_in_memory=2)
+        if len(shard_cache_dirs) == 1:
+            self.cache = ShardCache(shard_cache_dirs[0], fingerprint, max_shards_in_memory=2)
+        else:
+            self.cache = MultiShardCache(shard_cache_dirs, fingerprint, max_shards_in_memory=2)
 
     def __len__(self):
         return len(self.cache)
