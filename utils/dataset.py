@@ -203,6 +203,7 @@ class SD3LightManifestBuilder:
 
         device = self.caching_device
         dtype = self.vae.dtype if hasattr(self.vae, "dtype") else torch.float32
+        writers = {}
         for batch in tqdm(dataloader, desc='encoding cache batches'):
             with torch.inference_mode(), torch.cuda.amp.autocast(enabled=device.type == "cuda", dtype=dtype):
                 pixel_batch = torch.stack(batch['pixel_values']).to(device, dtype=dtype, non_blocking=True)
@@ -227,11 +228,14 @@ class SD3LightManifestBuilder:
             masks = batch['mask']
             cache_bases = batch['cache_base']
             for idx in range(len(captions_batch)):
+                cache_base = cache_bases[idx]
+                if cache_base not in writers:
+                    writers[cache_base] = ShardCacheWriter(cache_base, manifest_fp, shard_size=self.shard_size)
+
                 mask_tensor = masks[idx]
                 if mask_tensor is None:
                     mask_tensor = torch.tensor([])
-                cache_base = cache_bases[idx]
-                writer = ShardCacheWriter(cache_base, manifest_fp, shard_size=self.shard_size)
+                writer = writers[cache_base]
                 sample = {
                     'latents': latents[idx],
                     'mask': mask_tensor.cpu(),
@@ -243,9 +247,9 @@ class SD3LightManifestBuilder:
                     't5_prompt_embed': text_dict.get('t5_prompt_embed', torch.tensor([]))[idx] if text_dict.get('t5_prompt_embed', None) is not None and text_dict.get('t5_prompt_embed', torch.tensor([])).numel() > 0 else torch.tensor([]),
                 }
                 writer.add(sample)
-                writer.finalize()
-                with open(cache_base / 'manifest.json', 'w') as f:
-                    json.dump({'fingerprint': manifest_fp}, f)
+
+        for writer in writers.values():
+            writer.finalize()
         # return the first directory's cache for compatibility
         return cache_dirs[0] if cache_dirs else self.cache_root, manifest_fp
 
