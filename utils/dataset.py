@@ -9,6 +9,7 @@ import json
 import tarfile
 from inspect import signature
 import sys
+import time
 sys.path.insert(0, os.path.join(os.path.abspath(os.path.dirname(__file__)), '../submodules/ComfyUI'))
 import copy
 import numpy as np
@@ -177,17 +178,41 @@ class SD3LightManifestBuilder:
                     # Another process might have already removed it.
                     continue
 
-        def _wait_for_manifest_ready(target_bases: list[Path]):
-            if dist.is_initialized():
-                dist.barrier()
-            for cache_base in target_bases:
-                manifest_file = cache_base / 'manifest.json'
-                if not manifest_file.exists():
-                    raise RuntimeError(f"Cache manifest missing after synchronization: {manifest_file}")
-                with open(manifest_file) as f:
-                    data = json.load(f)
-                if not _is_valid_manifest(data):
-                    raise RuntimeError(f"Cache manifest incomplete for {cache_base}. Please regenerate cache.")
+        def _wait_for_manifest_ready(target_bases: list[Path], timeout_sec: float = 600.0, poll_interval: float = 1.0):
+            start = time.time()
+            last_log = start
+
+            while True:
+                all_ready = True
+                for cache_base in target_bases:
+                    manifest_file = cache_base / 'manifest.json'
+                    try:
+                        with open(manifest_file) as f:
+                            data = json.load(f)
+                    except FileNotFoundError:
+                        all_ready = False
+                        break
+                    except json.JSONDecodeError:
+                        all_ready = False
+                        break
+
+                    if not _is_valid_manifest(data):
+                        all_ready = False
+                        break
+
+                if all_ready:
+                    return
+
+                elapsed = time.time() - start
+                if elapsed > timeout_sec:
+                    raise TimeoutError(f"Cache manifest incomplete after waiting {timeout_sec}s: {target_bases}")
+
+                now = time.time()
+                if now - last_log > 30 and is_main_process():
+                    print(f"[SD3 cache] waiting for manifest completion ({int(elapsed)}s elapsed)...")
+                    last_log = now
+
+                time.sleep(poll_interval)
 
         cache_dirs = []
         entries = []
@@ -227,8 +252,7 @@ class SD3LightManifestBuilder:
 
         # Only the main process should perform caching to avoid racing clears/deletes.
         if not builder_process:
-            if any(needs_build for _, _, needs_build in directories):
-                _wait_for_manifest_ready([cb for _, cb, _ in directories])
+            _wait_for_manifest_ready([cb for _, cb, _ in directories])
             return cache_dirs if cache_dirs else [self.cache_root], None
 
         # If everything is already cached, just validate manifests and return.
