@@ -872,6 +872,7 @@ if __name__ == '__main__':
             model_engine.gradient_accumulation_steps(),
             num_workers=config.get('num_dataloader_workers', 4),
             prefetch_factor=config.get('dataloader_prefetch_per_worker', 2),
+            shuffle=False
         )
         steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
     else:
