@@ -426,7 +426,7 @@ if __name__ == '__main__':
     torch.cuda.set_device(local_rank)
 
     # Now initialize deepspeed
-    deepspeed.init_distributed(dist_backend="nccl", device_rank=local_rank)
+    deepspeed.init_distributed(dist_backend="nccl")
 
     # needed for broadcasting Queue in dataset.py
     # torch.cuda.set_device(dist.get_rank())
