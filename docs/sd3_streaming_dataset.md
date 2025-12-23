@@ -13,7 +13,7 @@
 - **`utils/dataset.py`**
   - `SD3LightManifestBuilder`：扫描数据目录生成元数据 shard（路径、caption、是否视频）。
   - `SD3LightPretrainDataset`：仅存 `ShardCache` 句柄，`__getitem__` 调 `model.get_preprocess_media_file_fn`。
-  - `SD3LightPretrainDataLoader`：`DataLoader + DistributedSampler` 构造大 batch，再用现有 `split_batch` 做 micro-batch，仍支持 `_broadcast_target`、`set_eval_quantile`。
+  - `SD3LightPretrainDataLoader`：`DataLoader + DistributedSampler` 构造大 batch，再用现有 `split_batch` 做 micro-batch，仍支持 `_broadcast_target`、`set_eval_quantile`，可通过 `shuffle`/`drop_last` 控制分布式洗牌与尾部截断。
 - **`train.py`**
   - 当 `training_type == "sd3_light_pretrain"` 且 `sd3_streaming_dataset=True` 时，走新 manifest+streaming 路径；否则保持旧路径。
   - 现有优化器/调度器/EMA/日志逻辑不变。
@@ -41,7 +41,7 @@
 ## 训练流程（sd3_light_pretrain）
 1. 通过 `SD3LightManifestBuilder.build()` 生成/校验 manifest（fingerprint 不一致时自动清空）。
 2. 构造 `SD3LightPretrainDataset`（持有 `ShardCache` 与模型的 `preprocess` 函数）。
-3. 创建 `SD3LightPretrainDataLoader`：
+3. 创建 `SD3LightPretrainDataLoader`（支持 `shuffle=False` 关闭全量 randperm、`drop_last` 可调；缓存等待超时时长可用 `sd3_manifest_timeout_sec` 配置，默认无限等待）：
    - `batch_size = micro_batch_size_per_gpu * gradient_accumulation_steps`
    - 使用 `DistributedSampler` 分发样本并乱序。
    - 每个 batch 经 `model.prepare_inputs` + `_broadcast_target`，然后按梯度累积切成 micro-batch。
@@ -56,6 +56,7 @@
 ## 扩展与调优
 - `sd3_shard_size`：控制 manifest 分片大小（默认 512）。
 - `num_dataloader_workers` / `dataloader_prefetch_per_worker`：平衡 CPU 吞吐与主机内存。
+- `sd3_manifest_timeout_sec`：构建/等待 manifest 的超时时间；默认无限等待，若希望在缓存异常时尽快报错，可设置为秒数。
 - 如需在缓存阶段增加校验/过滤，可在 `SD3LightManifestBuilder.build` 中扩展。
 
 ## 启用方式与配置示例
