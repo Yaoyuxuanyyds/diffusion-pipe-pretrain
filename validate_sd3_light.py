@@ -6,6 +6,7 @@ from typing import Dict
 import torch
 import diffusers
 
+from models.sd3_light import LightSD3Pipeline
 
 def parse_dtype(dtype_str: str) -> torch.dtype:
     dtype_map = {
@@ -178,6 +179,14 @@ def main():
             raise RuntimeError("EMA weights are identical to base weights.")
     else:
         print("[3] ema_shadow not provided, skipping EMA comparison.")
+
+    print("[4] Loading LightSD3Pipeline from trained weights...")
+    pipeline = LightSD3Pipeline.load_from_pretrained(model_dir, dtype=dtype)
+    print("[INFO] LightSD3Pipeline structure:")
+    print(pipeline)
+    if hasattr(pipeline, "diffusers_pipeline"):
+        print("[INFO] Underlying diffusers pipeline:")
+        print(pipeline.diffusers_pipeline)
 
     print("✅ sd3_light weight comparison complete.")
 
