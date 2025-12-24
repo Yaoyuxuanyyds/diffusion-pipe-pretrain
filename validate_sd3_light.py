@@ -157,7 +157,7 @@ def main():
     if args.ema_shadow:
         print("[4] Loading EMA shadow and re-checking loss...")
         pipe.load_ema_shadow(args.ema_shadow, strict=False)
-        ema_loss, ema_breakdown = run_loss_check(pipe, args.p rompt, args.height, args.width, device)
+        ema_loss, ema_breakdown = run_loss_check(pipe, args.prompt, args.height, args.width, device)
         print(f"EMA loss: {ema_loss:.6f}")
         if ema_breakdown:
             print(f"EMA loss breakdown: {ema_breakdown}")
