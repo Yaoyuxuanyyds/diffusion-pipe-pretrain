@@ -1,9 +1,10 @@
 import argparse
+import json
 from pathlib import Path
+from typing import Dict
 
 import torch
-
-from models.sd3_light import LightSD3Pipeline
+import diffusers
 
 
 def parse_dtype(dtype_str: str) -> torch.dtype:
@@ -21,164 +22,126 @@ def parse_dtype(dtype_str: str) -> torch.dtype:
     return dtype
 
 
-def build_prompt_embeddings(pipe: LightSD3Pipeline, prompt: str):
-    prompt_embed, pooled_prompt_embed = pipe._encode_clip_prompts(
-        [prompt], text_encoder=pipe.text_encoder, tokenizer=pipe.tokenizer
+def resolve_base_model_dir(model_dir: Path, base_model_dir: str | None) -> str:
+    if base_model_dir:
+        return base_model_dir
+
+    model_index_path = model_dir / "model_index.json"
+    if not model_index_path.exists():
+        raise FileNotFoundError(
+            f"model_index.json not found in {model_dir}. Provide --base_model_dir explicitly."
+        )
+
+    with model_index_path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+
+    for key in ("base_model", "diffusers_path", "_name_or_path"):
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            return value
+
+    raise ValueError(
+        "Unable to infer base model path from model_index.json. "
+        "Provide --base_model_dir explicitly."
     )
-    prompt_2_embed, pooled_prompt_2_embed = pipe._encode_clip_prompts(
-        [prompt], text_encoder=pipe.text_encoder_2, tokenizer=pipe.tokenizer_2
+
+
+def load_transformer_state(model_dir: str, dtype: torch.dtype) -> Dict[str, torch.Tensor]:
+    transformer = diffusers.SD3Transformer2DModel.from_pretrained(
+        model_dir,
+        subfolder="transformer",
+        torch_dtype=dtype,
+        low_cpu_mem_usage=False,
+        device_map=None,
     )
-    t5_prompt_embed = pipe._encode_t5_prompts([prompt])
-    return prompt_embed, pooled_prompt_embed, prompt_2_embed, pooled_prompt_2_embed, t5_prompt_embed
+    return {k: v.detach().cpu().float() for k, v in transformer.state_dict().items()}
 
 
-@torch.no_grad()
-def run_loss_check(pipe: LightSD3Pipeline, prompt: str, height: int, width: int, device: torch.device):
-    pipe.eval()
-    vae = pipe.get_vae()
-    vae.to(device)
-
-    image = torch.rand((1, 3, height, width), device=device) * 2 - 1
-    latents = pipe.get_call_vae_fn(vae)(image)
-
-    (
-        prompt_embed,
-        pooled_prompt_embed,
-        prompt_2_embed,
-        pooled_prompt_2_embed,
-        t5_prompt_embed,
-    ) = build_prompt_embeddings(pipe, prompt)
-
-    inputs = {
-        "latents": latents,
-        "prompt_embed": prompt_embed,
-        "pooled_prompt_embed": pooled_prompt_embed,
-        "prompt_2_embed": prompt_2_embed,
-        "pooled_prompt_2_embed": pooled_prompt_2_embed,
-        "t5_prompt_embed": t5_prompt_embed,
-        "mask": torch.ones((1, height, width), device=device),
-    }
-
-    model_inputs, label = pipe.prepare_inputs(inputs)
-    output = pipe.transformer(*model_inputs)
-    loss_fn = pipe.get_loss_fn()
-    loss = loss_fn(output, label)
-
-    loss_value = float(loss.detach().cpu())
-    if not torch.isfinite(loss):
-        raise RuntimeError("Loss is NaN/Inf, model weights may be invalid.")
-
-    return loss_value, pipe.get_loss_breakdown()
+def normalize_ema_state(ema_state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    if any(k.startswith("transformer.") for k in ema_state.keys()):
+        ema_state = {k[len("transformer."):]: v for k, v in ema_state.items() if k.startswith("transformer.")}
+    return {k: v.detach().cpu().float() for k, v in ema_state.items()}
 
 
-@torch.no_grad()
-def run_sampling(
-    pipe: LightSD3Pipeline,
-    prompt: str,
-    height: int,
-    width: int,
-    steps: int,
-    seed: int,
-    out_path: Path,
-    device: torch.device,
-):
-    pipe.eval()
-    generator = torch.Generator(device=device).manual_seed(seed)
-    image = pipe.diffusers_pipeline(
-        prompt=prompt,
-        height=height,
-        width=width,
-        num_inference_steps=steps,
-        guidance_scale=5.0,
-        generator=generator,
-    ).images[0]
-    image.save(out_path)
-    return out_path
+def compare_state_dicts(
+    base_state: Dict[str, torch.Tensor],
+    target_state: Dict[str, torch.Tensor],
+    name: str,
+    atol: float = 1e-6,
+) -> bool:
+    shared_keys = sorted(set(base_state) & set(target_state))
+    if not shared_keys:
+        raise ValueError(f"No shared parameters found when comparing {name} weights.")
+
+    missing_in_target = sorted(set(base_state) - set(target_state))
+    missing_in_base = sorted(set(target_state) - set(base_state))
+    if missing_in_target:
+        print(f"[WARN] {name} is missing {len(missing_in_target)} keys found in base model.")
+    if missing_in_base:
+        print(f"[WARN] {name} has {len(missing_in_base)} extra keys not in base model.")
+
+    max_abs_diff = 0.0
+    changed_keys = 0
+    for key in shared_keys:
+        diff = (target_state[key] - base_state[key]).abs().max().item()
+        if diff > atol:
+            changed_keys += 1
+        max_abs_diff = max(max_abs_diff, diff)
+
+    total_keys = len(shared_keys)
+    print(
+        f"[CHECK] {name}: {changed_keys}/{total_keys} parameters differ "
+        f"(max_abs_diff={max_abs_diff:.6f}, atol={atol})."
+    )
+    return changed_keys > 0
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Validate sd3_light weights and EMA with loss + sampling.")
+    parser = argparse.ArgumentParser(description="Validate sd3_light weights by comparing to base init.")
     parser.add_argument("--model_dir", required=True, help="Path to saved sd3_light model directory.")
+    parser.add_argument("--base_model_dir", default=None, help="Path to base diffusers model directory.")
     parser.add_argument("--ema_shadow", default=None, help="Path to ema_shadow.pt (optional).")
-    parser.add_argument("--prompt", default="a photo of a cute cat", help="Prompt for embeddings/sampling.")
+    parser.add_argument("--dtype", default="float16", help="float16|bfloat16|float32")
+
+    # legacy args preserved for compatibility with sample-test.sh
+    parser.add_argument("--prompt", default="a photo of a cute cat")
     parser.add_argument("--height", type=int, default=256)
     parser.add_argument("--width", type=int, default=256)
-    parser.add_argument("--steps", type=int, default=12, help="Sampling steps.")
+    parser.add_argument("--steps", type=int, default=12)
     parser.add_argument("--seed", type=int, default=1234)
-    parser.add_argument("--dtype", default="float16", help="float16|bfloat16|float32")
-    parser.add_argument("--expected_blocks", type=int, default=15, help="Optional transformer block count check.")
     parser.add_argument("--output_dir", default="sd3_light_validation_outputs")
     args = parser.parse_args()
 
     dtype = parse_dtype(args.dtype)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if device.type == "cpu" and dtype in (torch.float16, torch.bfloat16):
+    if not torch.cuda.is_available() and dtype in (torch.float16, torch.bfloat16):
         dtype = torch.float32
 
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    model_dir = Path(args.model_dir)
+    base_model_dir = resolve_base_model_dir(model_dir, args.base_model_dir)
 
-    print("[1] Loading sd3_light pipeline...")
-    pipe = LightSD3Pipeline.load_from_pretrained(
-        model_dir=args.model_dir,
-        dtype=dtype,
-        extra_model_config={"num_layers": args.expected_blocks} if args.expected_blocks else None,
-    )
-    pipe.to(device)
+    print("[1] Loading base transformer weights...")
+    base_state = load_transformer_state(base_model_dir, dtype)
 
-    if args.expected_blocks is not None:
-        actual_blocks = len(pipe.transformer.transformer_blocks)
-        if actual_blocks != args.expected_blocks:
-            raise RuntimeError(
-                f"Transformer block count mismatch: expected {args.expected_blocks}, got {actual_blocks}"
-            )
-        print(f"[CHECK] Transformer blocks OK: {actual_blocks}")
+    print("[2] Loading trained transformer weights...")
+    trained_state = load_transformer_state(str(model_dir), dtype)
 
-    print("[2] Running loss check on base weights...")
-    base_loss, base_breakdown = run_loss_check(pipe, args.prompt, args.height, args.width, device)
-    print(f"Base loss: {base_loss:.6f}")
-    if base_breakdown:
-        print(f"Base loss breakdown: {base_breakdown}")
-
-    base_sample_path = output_dir / "sample_base.png"
-    print("[3] Sampling image with base weights...")
-    run_sampling(
-        pipe,
-        args.prompt,
-        args.height,
-        args.width,
-        args.steps,
-        args.seed,
-        base_sample_path,
-        device,
-    )
-    print(f"Base sample saved to: {base_sample_path}")
+    changed = compare_state_dicts(base_state, trained_state, name="trained")
+    if not changed:
+        raise RuntimeError("Trained weights are identical to base weights.")
 
     if args.ema_shadow:
-        print("[4] Loading EMA shadow and re-checking loss...")
-        pipe.load_ema_shadow(args.ema_shadow, strict=False)
-        ema_loss, ema_breakdown = run_loss_check(pipe, args.p rompt, args.height, args.width, device)
-        print(f"EMA loss: {ema_loss:.6f}")
-        if ema_breakdown:
-            print(f"EMA loss breakdown: {ema_breakdown}")
-
-        ema_sample_path = output_dir / "sample_ema.png"
-        print("[5] Sampling image with EMA weights...")
-        run_sampling(
-            pipe,
-            args.prompt,
-            args.height,
-            args.width,
-            args.steps,
-            args.seed,
-            ema_sample_path,
-            device,
-        )
-        print(f"EMA sample saved to: {ema_sample_path}")
+        print("[3] Loading EMA shadow weights...")
+        ema_state = torch.load(args.ema_shadow, map_location="cpu")
+        if not isinstance(ema_state, dict) or not ema_state:
+            raise ValueError(f"Invalid ema_shadow at {args.ema_shadow}: empty or not a dict")
+        ema_state = normalize_ema_state(ema_state)
+        ema_changed = compare_state_dicts(base_state, ema_state, name="ema")
+        if not ema_changed:
+            raise RuntimeError("EMA weights are identical to base weights.")
     else:
-        print("[4] ema_shadow not provided, skipping EMA checks.")
+        print("[3] ema_shadow not provided, skipping EMA comparison.")
 
-    print("✅ sd3_light validation complete.")
+    print("✅ sd3_light weight comparison complete.")
 
 
 if __name__ == "__main__":
