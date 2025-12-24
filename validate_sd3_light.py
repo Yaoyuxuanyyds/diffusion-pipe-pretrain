@@ -46,7 +46,7 @@ def resolve_base_model_dir(model_dir: Path, base_model_dir: str | None) -> str:
     )
 
 
-def load_transformer_state(model_dir: str, dtype: torch.dtype) -> Dict[str, torch.Tensor]:
+def load_transformer_state(model_dir: str, dtype: torch.dtype) -> dict[str, torch.Tensor]:
     transformer = diffusers.SD3Transformer2DModel.from_pretrained(
         model_dir,
         subfolder="transformer",
@@ -57,15 +57,15 @@ def load_transformer_state(model_dir: str, dtype: torch.dtype) -> Dict[str, torc
     return {k: v.detach().cpu().float() for k, v in transformer.state_dict().items()}
 
 
-def normalize_ema_state(ema_state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+def normalize_ema_state(ema_state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     if any(k.startswith("transformer.") for k in ema_state.keys()):
         ema_state = {k[len("transformer."):]: v for k, v in ema_state.items() if k.startswith("transformer.")}
     return {k: v.detach().cpu().float() for k, v in ema_state.items()}
 
 
 def compare_state_dicts(
-    base_state: Dict[str, torch.Tensor],
-    target_state: Dict[str, torch.Tensor],
+    base_state: dict[str, torch.Tensor],
+    target_state: dict[str, torch.Tensor],
     name: str,
     baseline_name: str,
     atol: float = 1e-6,
