@@ -103,15 +103,19 @@ def compare_state_dicts(
     )
     if unchanged_keys:
         prefix_counts: dict[str, int] = {}
+        prefix_keys: dict[str, list[str]] = {}
         for key in unchanged_keys:
             parts = key.split(".")
             prefix = ".".join(parts[:2]) if len(parts) > 1 else parts[0]
             prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
+            prefix_keys.setdefault(prefix, []).append(key)
         sorted_prefixes = sorted(prefix_counts.items(), key=lambda item: (-item[1], item[0]))
         max_groups = 20
         print(f"[INFO] {name}: unchanged parameter groups (top {max_groups}):")
         for prefix, count in sorted_prefixes[:max_groups]:
             print(f"  - {prefix}: {count}")
+            for key in sorted(prefix_keys[prefix]):
+                print(f"      * {key}")
         if len(sorted_prefixes) > max_groups:
             remaining = len(sorted_prefixes) - max_groups
             print(f"  ... and {remaining} more groups")
