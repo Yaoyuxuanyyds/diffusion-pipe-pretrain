@@ -1,164 +1,78 @@
-# diffusion-pipe
-A pipeline parallel training script for diffusion models.
+# SD3_Light 预训练指南（Diffusion-Pipe-Pretrain）
 
-Models supported: SDXL, Flux, LTX-Video, HunyuanVideo (t2v), Cosmos, Lumina Image 2.0, Wan2.1 (t2v and i2v), Chroma, HiDream, Stable Diffusion 3, Cosmos-Predict2, OmniGen2, Flux Kontext, Wan2.2, Qwen-Image, Qwen-Image-Edit, HunyuanImage-2.1, AuraFlow, Z-Image.
+本文档以 **SD3_Light** 为核心，介绍模型、数据集、预训练流程，并给出常用的启动命令示例（含多卡 cache、单机多卡、以及多机多卡）。
 
-## Features
-- Pipeline parallelism, for training models larger than can fit on a single GPU
-- Useful metrics logged to Tensorboard
-- Compute metrics on a held-out eval set, for measuring generalization
-- Training state checkpointing and resuming from checkpoint
-- Efficient multi-process, multi-GPU pre-caching of latents and text embeddings
-- Seemlessly supports both image and video models in a unified way
-- Easily add new models by implementing a single subclass
+## SD3_Light 模型简介
+**SD3_Light** 是 Stable Diffusion 3 系列的轻量化变体，强调在较低显存和算力预算下实现高质量生成。该仓库提供了 SD3_Light 的训练与预训练配置，配合 Deepspeed 实现高效并行训练。
 
-## Recent changes
-- 2025-11-29
-  - Change license to GPL-3 so I can use ComfyUI code. Going forward, model implementations will use ComfyUI backend code whenever possible.
-    - ComfyUI submodule has been added. Make sure to run ```git submodule update``` after pulling.
-  - Support Z-Image.
-- 2025-11-28
-  - Use new backend for caching latents and text embeddings. This allows near-instant loading of the cached dataset even for terabyte-scale datasets.
-    - It's recommended to manually delete the cache folder inside your dataset folders. You don't need to do this, but the old cached files will stay around and take up space.
-    - This is a fairly big change, if it causes problems for you, raise an issue.
-- 2025-10-27
-  - Add AuraFlow / Pony-V7 support.
-  - Remove multiple_overlapping setting for video clip mode. This didn't even work right (it would always use a single clip from the video). And future changes I have planned won't work with it either.
-  - Use float16 for cached files. Previously it was always float32 on disk. This shouldn't impact quality and will cut disk usage of cached files in half.
-- 2025-09-13
-  - Support HunyuanImage-2.1. This adds a new submodule; make sure to run ```git submodule update``` after pull.
-- 2025-08-23
-  - Support Qwen-Image-Edit. Make sure to update dependencies. You will need the latest Diffusers.
-- 2025-08-07
-  - Fix Flux training error caused by a breaking change in Diffusers. Make sure to update requirements.
-- 2025-08-06
-  - Support Qwen-Image.
-  - Slight speed improvement to Automagic optimizer.
-- 2025-07-29
-  - Support Wan2.2.
-    - The 5B is tested and fully validated on t2i training.
-    - All other models and modes (A14B, i2v, timestep ranges) are tested to confirm they run and that the loss looks reasonable, but proper learning hasn't been validated yet.
-- 2025-07-14
-  - Merge dev branch into main. Lots of changes that aren't relevant for most users. Recommended to use ```--regenerate_cache``` (or delete the cache folders) after update.
-      - If something breaks, please raise an issue and use the last known good commit in the meanwhile: ```git checkout 6940992455bb3bb2b88cd6e6c9463e7469929a70```
-  - Loading speed and throughput improvements for dataset caching. Will only make a big difference for very large datasets.
-  - Various dataset features and improvements to support large-scale training. Still testing, not documented yet.
-  - Add ```--trust_cache``` flag that will blindly load cached metadata files if they exist, without checking if any files changed. Can make dataset loading faster for large datasets, but you must be sure nothing in the dataset has changed since last caching. You probably don't have a large enough dataset for this to be useful.
-  - Add torch compile option that can speed up models. Not tested with all models.
-  - Add support for edit datasets and Flux Kontext. See supported models doc for details.
+主要特点：
+- 轻量化架构，适合单机/多机多卡预训练。
+- 与本仓库的数据缓存机制紧密配合，降低训练阶段的显存压力。
+- 通过配置文件统一管理训练参数，易于复现与扩展。
 
-## Windows support
-It will be difficult or impossible to make training work on native Windows. This is because Deepspeed only has [partial Windows support](https://github.com/microsoft/DeepSpeed/blob/master/blogs/windows/08-2024/README.md). Deepspeed is a hard requirement because the entire training script is built around Deepspeed pipeline parallelism. However, it will work on Windows Subsystem for Linux, specifically WSL 2. If you must use Windows I recommend trying WSL 2.
+## sd3_streaming_dataset 简介
+**sd3_streaming_dataset** 是面向 SD3_Light 预训练的数据集组织方式，支持流式读取与缓存机制结合使用。其优势包括：
+- 数据流式加载，支持大规模数据集训练。
+- 自动缓存潜变量与文本编码，减少重复计算。
+- 适配分布式训练场景，减少 I/O 压力。
 
-## Installing
-Clone the repository:
+## 预训练概览
+预训练过程分为两部分：
+1. **缓存阶段（cache）**：预先计算并缓存 latent 与文本编码，后续训练直接读取缓存。
+2. **训练阶段（train）**：加载缓存后的数据执行模型训练。可通过 `--trust_cache` 信任已生成的缓存。
+
+建议：
+- 数据量大时先完成缓存再训练。
+- 多机多卡时务必设置正确的 rendezvous（MASTER_ADDR/MASTER_PORT）。
+
+## 基本使用方法
+下面给出常用命令示例，请根据实际路径与硬件配置调整。
+
+### 1. 多卡 cache（仅缓存）
 ```
-git clone --recurse-submodules https://github.com/tdrussell/diffusion-pipe
+NCCL_P2P_DISABLE="0" NCCL_IB_DISABLE="0" \
+  deepspeed --num_gpus=4 train.py --deepspeed \
+  --config /inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/settings/cache/train_configs/sd3_cache_0000.toml \
+  --cache_only
 ```
 
-If you alread cloned it and forgot to do --recurse-submodules:
+### 2. 单机多卡基础 SD3_Light 预训练
 ```
-git submodule init
-git submodule update
-```
-
-Install Miniconda: https://docs.anaconda.com/miniconda/
-
-Create the environment:
-```
-conda create -n diffusion-pipe python=3.12
-conda activate diffusion-pipe
+NCCL_P2P_DISABLE="0" NCCL_IB_DISABLE="0" \
+  deepspeed --num_gpus=8 train.py --deepspeed \
+  --config /inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/settings/train/pretrain_sd3_light_base.toml \
+  --trust_cache
 ```
 
-Install PyTorch first. It is not listed in the requirements file, because certain GPUs sometimes need different versions of PyTorch or CUDA, and you might have to find a combination that works for your hardware. As of this writing (October 26, 2025), PyTorch 2.9.0 with CUDA 12.8 works on my 4090, and is compatible with the current latest flash-attn 2.8.3:
+### 3. 多机多卡基础 SD3_Light + 文本重建（Text Reconstruction）预训练
 ```
-pip install torch torchvision
+RANK || true
+unset WORLD_SIZE || true
+unset LOCAL_RANK || true
+
+export NCCL_P2P_DISABLE=0
+export NCCL_IB_DISABLE=0
+# export NCCL_SOCKET_IFNAME=eth0   # 如有多网卡建议打开
+
+# ===== rendezvous 关键 =====
+if [ "${PET_NODE_RANK}" -eq 0 ]; then
+  export MASTER_ADDR=$(hostname -I | awk '{print $1}')
+fi
+export MASTER_PORT=29500
+
+torchrun \
+  --nnodes ${PET_NNODES} \
+  --node_rank ${PET_NODE_RANK} \
+  --nproc_per_node 8 \
+  --master_addr ${MASTER_ADDR} \
+  --master_port ${MASTER_PORT} \
+  train.py \
+  --deepspeed \
+  --config /inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/settings/train/pretrain_sd3_light_txt-multi.toml \
+  --trust_cache
 ```
 
-Install nvcc: https://anaconda.org/nvidia/cuda-nvcc. Probably try to make it match the CUDA version of PyTorch.
-
-Install the rest of the dependencies:
-```
-pip install -r requirements.txt
-```
-
-(Optional) Install Flash Attention. It's not in the requirements file. Some models need it.
-```
-pip install flash-attn
-```
-
-### Cosmos requirements
-NVIDIA Cosmos (the original Cosmos video model, not Cosmos-Predict2) additionally requires TransformerEngine.
-
-This dependency isn't in the requirements file. You probably need to set some environment variables for it to install correctly. The following command worked for me:
-```
-C_INCLUDE_PATH=/home/anon/miniconda3/envs/diffusion-pipe/lib/python3.12/site-packages/nvidia/cudnn/include:$C_INCLUDE_PATH CPLUS_INCLUDE_PATH=/home/anon/miniconda3/envs/diffusion-pipe/lib/python3.12/site-packages/nvidia/cudnn/include:$CPLUS_INCLUDE_PATH pip install --no-build-isolation transformer_engine[pytorch]
-```
-Edit the paths above for your conda environment.
-
-## Updating
-```
-git pull
-git submodule update
-```
-This project uses git submodules. If a new submodule has been added, you need to run ```git submodule update``` once after pulling in order to clone the new submodule. This only needs to be done once when a new submodule is added.
-
-### Updating dependencies
-Most dependencies are intentionally left unpinned in the requirements.txt file. If you want to update them to the latest version, you can run ```pip install -r requirements.txt -U```.
-
-## Dataset preparation
-A dataset consists of one or more directories containing image or video files, and corresponding captions. You can mix images and videos in the same directory, but it's probably a good idea to separate them in case you need to specify certain settings on a per-directory basis. Caption files should be .txt files with the same base name as the corresponding media file, e.g. image1.png should have caption file image1.txt in the same directory. If a media file doesn't have a matching caption file, a warning is printed, but training will proceed with an empty caption.
-
-For images, any image format that can be loaded by Pillow should work. For videos, any format that can be loaded by ImageIO should work. Note that this means **WebP videos are not supported**, because ImageIO can't load multi-frame WebPs.
-
-## Supported models
-See the [supported models doc](./docs/supported_models.md) for more information on how to configure each model, the options it supports, and the format of the saved LoRAs.
-
-## Training
-**Start by reading through the config files in the examples directory.** Almost everything is commented, explaining what each setting does. [This config file](./examples/main_example.toml) is the main example with all of the comments. [This dataset config file](./examples/dataset.toml) has the documentation for the dataset options.
-
-Once you've familiarized yourself with the config file format, go ahead and make a copy and edit to your liking. At minimum, change all the paths to conform to your setup, including the paths in the dataset config file.
-
-Launch training like this:
-```
-NCCL_P2P_DISABLE="1" NCCL_IB_DISABLE="1" deepspeed --num_gpus=1 train.py --deepspeed --config examples/hunyuan_video.toml
-```
-RTX 4000 series needs those 2 environment variables set. Other GPUs may not need them. You can try without them, Deepspeed will complain if it's wrong.
-
-If you enabled checkpointing, you can resume training from the latest checkpoint by simply re-running the exact same command but with the `--resume_from_checkpoint` flag. You can also specify a specific checkpoint folder name after the flag to resume from that particular checkpoint (e.g. `--resume_from_checkpoint "20250212_07-06-40"`). This option is particularly useful if you have run multiple training sessions with different datasets and want to resume from a specific training folder.
-
-Please note that resuming from checkpoint uses the **config file on the command line**, not the config file saved into the output directory. You are responsible for making sure that the config file you pass in matches what was previously used.
-
-## Output files
-A new directory will be created in ```output_dir``` for each training run. This contains the checkpoints, saved models, and Tensorboard metrics. Saved models/LoRAs will be in directories named like epoch1, epoch2, etc. Deepspeed checkpoints are in directories named like global_step1234. These checkpoints contain all training state, including weights, optimizer, and dataloader state, but can't be used directly for inference. The saved model directory will have the safetensors weights, PEFT adapter config JSON, as well as the diffusion-pipe config file for easier tracking of training run settings.
-
-## Reducing VRAM requirements
-The [wan_14b_min_vram.toml](./examples/wan_14b_min_vram.toml) example file has all of these settings enabled.
-- Use AdamW8BitKahan optimizer:
-  ```
-  [optimizer]
-  type = 'AdamW8bitKahan'
-  lr = 5e-5
-  betas = [0.9, 0.99]
-  weight_decay = 0.01
-  stabilize = false
-  ```
-- Use block swapping if the model supports it: ```blocks_to_swap = 32```
-- Try the expandable_segments feature in the CUDA memory allocator:
-  - ```PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True NCCL_P2P_DISABLE="1" NCCL_IB_DISABLE="1" deepspeed --num_gpus=1 train.py --deepspeed --config /home/you/path/to/config.toml```
-  - I've seen this help a lot when training on video with multiple aspect ratio buckets.
-  - On my system, sometimes this causes random CUDA failures. If training gets through a few steps though, it will train indefinitely without failures. Very weird.
-- Use unsloth activation checkpointing: ```activation_checkpointing = 'unsloth'```
-
-## Parallelism
-This code uses hybrid data- and pipeline-parallelism. Set the ```--num_gpus``` flag appropriately for your setup. Set ```pipeline_stages``` in the config file to control the degree of pipeline parallelism. Then the data parallelism degree will automatically be set to use all GPUs (number of GPUs must be divisible by pipeline_stages). For example, with 4 GPUs and pipeline_stages=2, you will run two instances of the model, each divided across two GPUs.
-
-## Pre-caching
-Latents and text embeddings are cached to disk before training happens. This way, the VAE and text encoders don't need to be kept loaded during training. The Huggingface Datasets library is used for all the caching. Cache files are reused between training runs if they exist. All cache files are written into a directory named "cache" inside each dataset directory.
-
-This caching also means that training LoRAs for text encoders is not currently supported.
-
-Three flags are relevant for caching. ```--cache_only``` does the caching flow, then exits without training anything. ```--regenerate_cache``` forces cache regeneration. ```--trust_cache``` will blindly load the cached metadata files, without checking if any data files have changed via the fingerprint. This can speed up loading for very large datasets (100,000+ images), but you must make sure nothing in the dataset has changed.
-
-## Extra
-You can check out my [qlora-pipe](https://github.com/tdrussell/qlora-pipe) project, which is basically the same thing as this but for LLMs.
+## 备注
+- `NCCL_P2P_DISABLE` / `NCCL_IB_DISABLE` 建议按集群网络与显卡拓扑调整。
+- `--trust_cache` 会跳过缓存一致性校验，请确保缓存与原始数据一致。
+- 配置文件中可自定义数据路径、batch size、优化器设置等。
