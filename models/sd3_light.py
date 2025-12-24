@@ -146,12 +146,26 @@ class LightSD3Pipeline(BasePipeline):
         self.diffusers_pipeline.float(*args, **kwargs)
         return self
 
+    def _iter_pipeline_modules(self):
+        if hasattr(self.diffusers_pipeline, "components"):
+            for module in self.diffusers_pipeline.components.values():
+                if isinstance(module, nn.Module):
+                    yield module
+            return
+
+        for name in ["transformer", "vae", "text_encoder", "text_encoder_2", "text_encoder_3"]:
+            module = getattr(self.diffusers_pipeline, name, None)
+            if isinstance(module, nn.Module):
+                yield module
+
     def eval(self):
-        self.diffusers_pipeline.eval()
+        for module in self._iter_pipeline_modules():
+            module.eval()
         return self
 
     def train(self, mode: bool = True):
-        self.diffusers_pipeline.train(mode)
+        for module in self._iter_pipeline_modules():
+            module.train(mode)
         return self
 
 
@@ -505,7 +519,12 @@ class LightSD3Pipeline(BasePipeline):
 
     
     def prepare_inputs(self, inputs, timestep_quantile=None):
-        latents = inputs["latents"].float()
+        latents = inputs["latents"]
+        if isinstance(latents, dict):
+            if "latents" not in latents:
+                raise ValueError("Latents dict is missing 'latents' key.")
+            latents = latents["latents"]
+        latents = latents.float()
         prompt_embed = inputs["prompt_embed"]
         pooled_prompt_embed = inputs["pooled_prompt_embed"]
         prompt_2_embed = inputs["prompt_2_embed"]
