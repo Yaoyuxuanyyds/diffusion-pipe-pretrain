@@ -101,12 +101,12 @@ def main():
     parser.add_argument("--model_dir", required=True, help="Path to saved sd3_light model directory.")
     parser.add_argument("--ema_shadow", default=None, help="Path to ema_shadow.pt (optional).")
     parser.add_argument("--prompt", default="a photo of a cute cat", help="Prompt for embeddings/sampling.")
-    parser.add_argument("--height", type=int, default=512)
-    parser.add_argument("--width", type=int, default=512)
+    parser.add_argument("--height", type=int, default=256)
+    parser.add_argument("--width", type=int, default=256)
     parser.add_argument("--steps", type=int, default=12, help="Sampling steps.")
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--dtype", default="float16", help="float16|bfloat16|float32")
-    parser.add_argument("--expected_blocks", type=int, default=None, help="Optional transformer block count check.")
+    parser.add_argument("--expected_blocks", type=int, default=15, help="Optional transformer block count check.")
     parser.add_argument("--output_dir", default="sd3_light_validation_outputs")
     args = parser.parse_args()
 
@@ -157,7 +157,7 @@ def main():
     if args.ema_shadow:
         print("[4] Loading EMA shadow and re-checking loss...")
         pipe.load_ema_shadow(args.ema_shadow, strict=False)
-        ema_loss, ema_breakdown = run_loss_check(pipe, args.prompt, args.height, args.width, device)
+        ema_loss, ema_breakdown = run_loss_check(pipe, args.p rompt, args.height, args.width, device)
         print(f"EMA loss: {ema_loss:.6f}")
         if ema_breakdown:
             print(f"EMA loss breakdown: {ema_breakdown}")
