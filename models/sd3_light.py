@@ -311,7 +311,7 @@ class LightSD3Pipeline(BasePipeline):
         self._latest_loss_breakdown = None
 
         # 3. 🔥 裁剪 transformer（SD3-Light-15 的关键）
-        num_layers = self.model_config.get("num_layers", None)
+        num_layers = self.model_config.get("num_layers", 15)
         if num_layers is not None:
             num_layers = int(num_layers)
             transformer = self.diffusers_pipeline.transformer
