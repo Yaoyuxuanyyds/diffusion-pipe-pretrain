@@ -19,6 +19,7 @@ SAVEDIR="/inspire/hdd/project/chineseculture/public/yuxuan/SD3-Light-Eval/logs/g
 
 python validate_sd3_light.py \
   --model_dir "/inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/outputs/sd3_light_pretrain/base-mmdit/20251223_17-52-21/step10000" \
+  --base_model_dir "/inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/outputs/sd3_light_pretrain/sd3_light-layer15_init" \
   --prompt "a photo of a cute cat" \
   --height $IMGSIZE \
   --width $IMGSIZE \
