@@ -1,7 +1,7 @@
 # ===============================
 # Output
 # ===============================
-output_dir = '/inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/outputs/sd3_light_pretrain/base-mmdit-fulldata'
+output_dir = '/inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/outputs/sd3_light_pretrain/base-mmdit'
 
 dataset = '/inspire/hdd/project/chineseculture/public/yuxuan/diffusion-pipe/settings/train/cc12m_dataset.toml'
 
@@ -26,13 +26,20 @@ micro_batch_size_per_gpu = 64
 
 pipeline_stages = 1
 gradient_accumulation_steps = 1
-
-
 gradient_clipping = 1.0
 
-map_num_proc = 160
-num_dataloader_workers = 32
-prefetch_batches_per_worker = 2
+
+sd3_streaming_dataset = true          # 走新管线，默认为 true
+sd3_shard_size = 4096                  # 可调分片大小
+caching_batch_size = 128
+caching_num_workers=64
+
+
+num_dataloader_workers = 24
+dataloader_prefetch_per_worker = 1
+map_num_proc = 120
+
+
 
 # ===============================
 # LR schedule
