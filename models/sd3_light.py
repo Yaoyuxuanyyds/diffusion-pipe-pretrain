@@ -119,6 +119,7 @@ class LightSD3Pipeline(BasePipeline):
             diffusers_path,
             torch_dtype=dtype,
         )
+        self._set_param_original_name()
 
     def __getattr__(self, name):
         return getattr(self.diffusers_pipeline, name)
@@ -262,6 +263,10 @@ class LightSD3Pipeline(BasePipeline):
         for p in self.transformer.parameters():
             p.requires_grad_(True)
 
+    def _set_param_original_name(self):
+        for name, p in self.transformer.named_parameters():
+            p.original_name = f"transformer.{name}"
+
     # -------------------------------------------------------------------------
     # One-time bootstrap
     # -------------------------------------------------------------------------
@@ -343,6 +348,7 @@ class LightSD3Pipeline(BasePipeline):
 
         # 5. 冻结 / 解冻
         self._freeze_except_denoiser()
+        self._set_param_original_name()
 
         return self
 
@@ -376,6 +382,7 @@ class LightSD3Pipeline(BasePipeline):
 
         # 1) 确保 frozen 组件（VAE/TE）不是 meta：必要时从 base_dir 重新 load 一套完整 pipe
         if _pipe_has_meta(self.diffusers_pipeline):
+            print("[SD3-Light] save_model: detected meta tensors, reloading from base_dir.")
             save_pipe = diffusers.StableDiffusion3Pipeline.from_pretrained(
                 base_dir,
                 torch_dtype=dtype,
@@ -387,6 +394,8 @@ class LightSD3Pipeline(BasePipeline):
 
         # 2) 用 diffusers_sd 覆盖 transformer（这是关键）
         if diffusers_sd is not None:
+            if len(diffusers_sd) == 0:
+                raise RuntimeError("[SD3-Light] save_model received empty diffusers_sd.")
             # diffusers_sd 是 Saver 合并出来的 “全模型 key->tensor”
             # 我们只取 transformer 的部分，并把可能的 "transformer." 前缀去掉
             tr_sd = {}
@@ -397,11 +406,21 @@ class LightSD3Pipeline(BasePipeline):
                     # 如果你的 original_name 本来就不带 transformer. 前缀，也允许直接尝试
                     tr_sd[k] = v.detach().to("cpu")
 
+            print(
+                f"[SD3-Light] save_model: loading transformer sd "
+                f"(keys={len(tr_sd)}, raw_keys={len(diffusers_sd)})"
+            )
             missing, unexpected = save_pipe.transformer.load_state_dict(tr_sd, strict=False)
             if len(unexpected) > 0:
                 print(f"[WARN] unexpected keys when loading transformer sd: {unexpected[:20]}")
             if len(missing) > 0:
                 print(f"[WARN] missing keys when loading transformer sd: {missing[:20]}")
+            print(
+                f"[SD3-Light] save_model: load_state_dict done "
+                f"(missing={len(missing)}, unexpected={len(unexpected)})"
+            )
+        else:
+            print("[SD3-Light] save_model: diffusers_sd is None, saving current pipeline weights.")
 
         # 3) 最终保存
         save_pipe.save_pretrained(save_dir, safe_serialization=True)

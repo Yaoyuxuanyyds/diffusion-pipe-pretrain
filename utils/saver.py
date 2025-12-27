@@ -113,14 +113,37 @@ class Saver:
         # 每个 pipeline stage 的 dp0 负责写本 stage 的 state_dict 分片
         if dp_id == 0:
             partial_state_dict = {}
+            total_params = 0
+            skipped_params = 0
             for p in self.pipeline_model.parameters():
+                total_params += 1
                 if not hasattr(p, "original_name"):
+                    skipped_params += 1
                     continue
                 # detach 防止 optimizer/zero/bf16 optimizer 的 pickle 问题
                 partial_state_dict[p.original_name] = p.detach().to("cpu")
 
             if "save_dtype" in self.config:
                 convert_state_dict_dtype(partial_state_dict, self.config["save_dtype"])
+
+            if len(partial_state_dict) == 0:
+                logger.warning(
+                    "save_full_model: no parameters saved on dp=%s stage=%s "
+                    "(total=%s skipped=%s). Check original_name setup.",
+                    dp_id,
+                    stage_id,
+                    total_params,
+                    skipped_params,
+                )
+            else:
+                logger.info(
+                    "save_full_model: collected %s/%s params (skipped=%s) on dp=%s stage=%s",
+                    len(partial_state_dict),
+                    total_params,
+                    skipped_params,
+                    dp_id,
+                    stage_id,
+                )
 
             torch.save(partial_state_dict, tmp_dir / f"state_dict_{stage_id}.bin")
 
@@ -131,6 +154,16 @@ class Saver:
             state_dict = {}
             for path in tmp_dir.glob("state_dict_*.bin"):
                 state_dict.update(torch.load(path, map_location="cpu", weights_only=True))
+
+            if len(state_dict) == 0:
+                raise RuntimeError(
+                    "save_full_model: merged state_dict is empty. "
+                    "No parameters were saved; check original_name setup."
+                )
+            logger.info(
+                "save_full_model: merged %s params across pipeline stages.",
+                len(state_dict),
+            )
 
             # 关键：LightSD3Pipeline.save_model 内部会把 state_dict 写回 transformer，
             # 然后 diffusers_pipeline.save_pretrained(save_dir)
